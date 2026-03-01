@@ -9,8 +9,26 @@
  * the adapter is ready for the next command.
  */
 
-import { BleClient } from '@capacitor-community/bluetooth-le';
 import { SCAN_SERVICE_UUIDS, matchProfile } from './adapter-profiles.js';
+
+let BleClient = null;
+let bleLoadError = null;
+
+// Lazy-load BLE — resolves on first use, not at import time
+let bleLoadPromise = null;
+function loadBLE() {
+  if (!bleLoadPromise) {
+    bleLoadPromise = import('@capacitor-community/bluetooth-le')
+      .then((mod) => { BleClient = mod.BleClient; })
+      .catch((err) => { bleLoadError = err; });
+  }
+  return bleLoadPromise;
+}
+
+async function requireBLE() {
+  await loadBLE();
+  if (!BleClient) throw new Error('BLE not available in this environment. Use a real device.');
+}
 
 const PROMPT_CHAR = 0x3E; // '>'
 const SCAN_TIMEOUT_MS = 10000;
@@ -27,6 +45,7 @@ let initialised = false;
  */
 export async function initialiseBLE() {
   if (initialised) return;
+  await requireBLE();
   await BleClient.initialize({ androidNeverForLocation: true });
   initialised = true;
 }

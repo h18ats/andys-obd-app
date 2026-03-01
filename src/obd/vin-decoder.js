@@ -15,6 +15,18 @@ const YEAR_CODES = {
   6: 2006, 7: 2007, 8: 2008, 9: 2009,
 };
 
+// MINI body type codes (VIN position 4)
+// R = R56 hatchback, S = R57 convertible, U = R55 clubman, etc.
+const MINI_BODY_TYPES = {
+  R: { body: 'Hatchback', chassis: 'R56' },
+  S: { body: 'Convertible', chassis: 'R57' },
+  U: { body: 'Clubman', chassis: 'R55' },
+  E: { body: 'Countryman', chassis: 'R60' },
+  X: { body: 'Paceman', chassis: 'R61' },
+  T: { body: 'Coupe', chassis: 'R58' },
+  W: { body: 'Roadster', chassis: 'R59' },
+};
+
 // MINI model codes (VIN positions 4-7 patterns)
 const MINI_MODELS = {
   FE: 'Cooper',
@@ -25,6 +37,14 @@ const MINI_MODELS = {
   MF: 'Cooper',
   MG: 'Cooper S',
   ML: 'One',
+  RE: 'Cooper',
+  RG: 'Cooper S',
+  RL: 'One',
+  RM: 'John Cooper Works',
+  SE: 'Cooper Convertible',
+  SG: 'Cooper S Convertible',
+  SL: 'One Convertible',
+  SM: 'John Cooper Works Convertible',
 };
 
 /**
@@ -45,8 +65,16 @@ export function decodeVIN(raw) {
   const modelYearCode = vin[9];
   const modelYear = YEAR_CODES[modelYearCode] || null;
 
-  // R56 = second-gen MINI hatchback, produced 2006–2013
-  const isR56 = isMini && modelYear !== null && modelYear >= 2006 && modelYear <= 2013;
+  // Body type from VIN position 4 (first char of VDS)
+  const bodyCode = vds[0];
+  const bodyInfo = isMini ? MINI_BODY_TYPES[bodyCode] || null : null;
+  const chassis = bodyInfo?.chassis || null;
+
+  // R56 family = second-gen MINI platform, produced 2006–2015
+  const isR56Family = isMini && modelYear !== null && modelYear >= 2006 && modelYear <= 2015;
+  const isR56 = isR56Family && chassis === 'R56';
+  const isR57 = isR56Family && chassis === 'R57';
+  const isConvertible = isR57;
 
   // Attempt model identification from VDS
   const modelKey = vds.substring(0, 2);
@@ -63,6 +91,11 @@ export function decodeVIN(raw) {
     manufacturer: isMini ? 'MINI (BMW Group)' : wmi,
     isMini,
     isR56,
+    isR57,
+    isR56Family,
+    isConvertible,
+    chassis,
+    bodyType: bodyInfo?.body || null,
     modelYear,
     modelYearCode,
     model,
