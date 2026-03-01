@@ -34,6 +34,34 @@ const TAB_LABELS = {
   [VIEWS.VEHICLE]: 'Vehicle',
 };
 
+// --- DVLA VRN Lookup ---
+// TODO: Replace with real DVLA VES API call when API key arrives:
+//   POST https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles
+//   Headers: { 'x-api-key': DVLA_API_KEY, 'Content-Type': 'application/json' }
+//   Body: { registrationNumber: vrn }
+async function lookupVRN(vrn) {
+  // Simulate network delay
+  await new Promise(r => setTimeout(r, 800));
+  const cleaned = vrn.replace(/\s/g, '').toUpperCase();
+  if (cleaned.length < 2 || cleaned.length > 8) {
+    return { error: 'Invalid registration number' };
+  }
+  // Mock response matching DVLA VES API shape
+  return {
+    registrationNumber: cleaned,
+    make: 'MINI',
+    colour: 'WHITE',
+    yearOfManufacture: 2012,
+    engineCapacity: 1598,
+    fuelType: 'PETROL',
+    motStatus: 'Valid',
+    motExpiryDate: '2026-08-15',
+    taxStatus: 'Taxed',
+    taxDueDate: '2026-11-01',
+    co2Emissions: 136,
+  };
+}
+
 // --- History buffer for sparklines ---
 const HISTORY_SIZE = 30;
 
@@ -329,12 +357,14 @@ export default function App() {
     saveState('active_vehicle', id);
   }, []);
 
-  const handleAddVehicle = useCallback((nickname, vinString) => {
+  const handleAddVehicle = useCallback((nickname, vinString, vrn, dvlaData) => {
     const vinResult = vinString ? decodeVIN(vinString) : null;
     const vehicle = {
       id: `v_${Date.now()}`,
       nickname: nickname || 'New Vehicle',
       vinData: vinResult?.valid ? vinResult : null,
+      vrn: vrn || null,
+      dvlaData: dvlaData || null,
       addedAt: new Date().toISOString(),
       lastConnected: null,
       dtcHistory: [],
@@ -1032,6 +1062,59 @@ function VehicleView({ connected, vinData, batteryVoltage, supportedPIDs, adapte
         </Card>
       )}
 
+      {/* DVLA Data */}
+      {activeVehicle?.dvlaData && (
+        <Card>
+          <p style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, marginBottom: '10px' }}>DVLA Vehicle Data</p>
+          <div style={{
+            padding: '10px', borderRadius: '8px', background: '#1e293b',
+            fontFamily: 'monospace', fontSize: '17px', fontWeight: 700,
+            color: COLORS.accent, textAlign: 'center', letterSpacing: '3px',
+            marginBottom: '10px',
+          }}>
+            {activeVehicle.dvlaData.registrationNumber}
+          </div>
+          <InfoRow label="Make" value={activeVehicle.dvlaData.make} />
+          <InfoRow label="Colour" value={activeVehicle.dvlaData.colour} />
+          <InfoRow label="Year" value={activeVehicle.dvlaData.yearOfManufacture} />
+          <InfoRow label="Engine" value={activeVehicle.dvlaData.engineCapacity ? `${activeVehicle.dvlaData.engineCapacity}cc` : null} />
+          <InfoRow label="Fuel" value={activeVehicle.dvlaData.fuelType} />
+          {activeVehicle.dvlaData.co2Emissions && (
+            <InfoRow label="CO₂" value={`${activeVehicle.dvlaData.co2Emissions} g/km`} />
+          )}
+          <div style={{ marginTop: '8px', display: 'flex', gap: '12px' }}>
+            <div style={{ flex: 1 }}>
+              <p style={{ fontSize: '11px', color: COLORS.textMuted, margin: '0 0 2px' }}>MOT</p>
+              <p style={{
+                fontSize: '13px', fontWeight: 600, margin: 0,
+                color: activeVehicle.dvlaData.motStatus === 'Valid' ? COLORS.ok : COLORS.fault,
+              }}>
+                {activeVehicle.dvlaData.motStatus}
+              </p>
+              {activeVehicle.dvlaData.motExpiryDate && (
+                <p style={{ fontSize: '11px', color: COLORS.textMuted, margin: '2px 0 0' }}>
+                  Expires {activeVehicle.dvlaData.motExpiryDate}
+                </p>
+              )}
+            </div>
+            <div style={{ flex: 1 }}>
+              <p style={{ fontSize: '11px', color: COLORS.textMuted, margin: '0 0 2px' }}>Tax</p>
+              <p style={{
+                fontSize: '13px', fontWeight: 600, margin: 0,
+                color: activeVehicle.dvlaData.taxStatus === 'Taxed' ? COLORS.ok : COLORS.fault,
+              }}>
+                {activeVehicle.dvlaData.taxStatus}
+              </p>
+              {activeVehicle.dvlaData.taxDueDate && (
+                <p style={{ fontSize: '11px', color: COLORS.textMuted, margin: '2px 0 0' }}>
+                  Due {activeVehicle.dvlaData.taxDueDate}
+                </p>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
+
       {/* Battery voltage */}
       {batteryVoltage && (
         <Card>
@@ -1508,10 +1591,45 @@ function SignalBars({ rssi }) {
 function AddVehicleModal({ onAdd, onClose }) {
   const [nickname, setNickname] = useState('');
   const [vinInput, setVinInput] = useState('');
+  const [vrnInput, setVrnInput] = useState('');
+  const [vrnLooking, setVrnLooking] = useState(false);
+  const [dvlaResult, setDvlaResult] = useState(null);
+  const [vrnError, setVrnError] = useState(null);
+
+  const handleLookup = async () => {
+    const cleaned = vrnInput.trim();
+    if (!cleaned) return;
+    setVrnLooking(true);
+    setVrnError(null);
+    setDvlaResult(null);
+    try {
+      const result = await lookupVRN(cleaned);
+      if (result.error) {
+        setVrnError(result.error);
+      } else {
+        setDvlaResult(result);
+        if (!nickname.trim()) {
+          setNickname(`${result.make} ${result.colour.charAt(0)}${result.colour.slice(1).toLowerCase()}`);
+        }
+      }
+    } catch {
+      setVrnError('Lookup failed — try again later');
+    } finally {
+      setVrnLooking(false);
+    }
+  };
 
   const handleSubmit = () => {
     if (!nickname.trim()) return;
-    onAdd(nickname.trim(), vinInput.trim() || null);
+    const vrn = vrnInput.replace(/\s/g, '').toUpperCase() || null;
+    onAdd(nickname.trim(), vinInput.trim() || null, vrn, dvlaResult);
+  };
+
+  const inputStyle = {
+    width: '100%', padding: '10px 12px', borderRadius: '10px',
+    background: '#0f172a', color: COLORS.text,
+    border: `1px solid ${COLORS.bgCardBorder}`,
+    fontSize: '14px', outline: 'none', boxSizing: 'border-box',
   };
 
   return (
@@ -1528,12 +1646,88 @@ function AddVehicleModal({ onAdd, onClose }) {
           background: '#1a2235', borderRadius: '16px',
           border: `1px solid ${COLORS.bgCardBorder}`,
           padding: '20px',
+          maxHeight: '90vh', overflowY: 'auto',
         }}
       >
         <h2 style={{ fontSize: '16px', fontWeight: 700, color: COLORS.text, margin: '0 0 16px' }}>
           Add Vehicle
         </h2>
 
+        {/* VRN Lookup */}
+        <label style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, display: 'block', marginBottom: '6px' }}>
+          Registration (optional)
+        </label>
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '4px' }}>
+          <input
+            type="text"
+            value={vrnInput}
+            onChange={e => setVrnInput(e.target.value.toUpperCase())}
+            onKeyDown={e => e.key === 'Enter' && handleLookup()}
+            placeholder="AB12 CDE"
+            maxLength={10}
+            autoFocus
+            style={{
+              ...inputStyle,
+              fontFamily: 'monospace', fontWeight: 700,
+              letterSpacing: '2px', textTransform: 'uppercase',
+              flex: 1,
+            }}
+          />
+          <button
+            onClick={handleLookup}
+            disabled={!vrnInput.trim() || vrnLooking}
+            style={{
+              padding: '10px 16px', borderRadius: '10px', border: 'none',
+              background: (!vrnInput.trim() || vrnLooking) ? '#334155' : COLORS.accent,
+              color: '#fff', fontSize: '13px', fontWeight: 700,
+              cursor: (!vrnInput.trim() || vrnLooking) ? 'not-allowed' : 'pointer',
+              opacity: (!vrnInput.trim() || vrnLooking) ? 0.6 : 1,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {vrnLooking ? '...' : 'Look Up'}
+          </button>
+        </div>
+
+        {vrnError && (
+          <p style={{ fontSize: '12px', color: COLORS.fault, margin: '4px 0 8px' }}>{vrnError}</p>
+        )}
+
+        {dvlaResult && (
+          <div style={{
+            background: '#0f172a', borderRadius: '10px',
+            border: `1px solid ${COLORS.ok}30`,
+            padding: '10px 12px', marginTop: '4px', marginBottom: '12px',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <span style={{ fontSize: '14px', fontWeight: 700, color: COLORS.text }}>
+                {dvlaResult.make} — {dvlaResult.colour.charAt(0)}{dvlaResult.colour.slice(1).toLowerCase()}
+              </span>
+              <Badge label={dvlaResult.yearOfManufacture.toString()} variant="info" />
+            </div>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' }}>
+              <Badge label={dvlaResult.fuelType} variant="info" />
+              <Badge label={`${dvlaResult.engineCapacity}cc`} variant="info" />
+              {dvlaResult.co2Emissions && <Badge label={`${dvlaResult.co2Emissions}g CO₂`} variant="info" />}
+            </div>
+            <div style={{ display: 'flex', gap: '12px' }}>
+              <span style={{ fontSize: '11px', color: dvlaResult.motStatus === 'Valid' ? COLORS.ok : COLORS.fault }}>
+                MOT: {dvlaResult.motStatus}
+              </span>
+              <span style={{ fontSize: '11px', color: dvlaResult.taxStatus === 'Taxed' ? COLORS.ok : COLORS.fault }}>
+                Tax: {dvlaResult.taxStatus}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {!dvlaResult && !vrnError && (
+          <p style={{ fontSize: '11px', color: COLORS.textMuted, margin: '0 0 12px', lineHeight: 1.3 }}>
+            Enter a UK registration to look up make, model, MOT &amp; tax status.
+          </p>
+        )}
+
+        {/* Nickname */}
         <label style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, display: 'block', marginBottom: '6px' }}>
           Nickname *
         </label>
@@ -1543,16 +1737,10 @@ function AddVehicleModal({ onAdd, onClose }) {
           onChange={e => setNickname(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleSubmit()}
           placeholder="e.g. Betty, Daily Driver"
-          autoFocus
-          style={{
-            width: '100%', padding: '10px 12px', borderRadius: '10px',
-            background: '#0f172a', color: COLORS.text,
-            border: `1px solid ${COLORS.bgCardBorder}`,
-            fontSize: '14px', outline: 'none', boxSizing: 'border-box',
-            marginBottom: '12px',
-          }}
+          style={{ ...inputStyle, marginBottom: '12px' }}
         />
 
+        {/* VIN */}
         <label style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, display: 'block', marginBottom: '6px' }}>
           VIN (optional)
         </label>
@@ -1564,11 +1752,8 @@ function AddVehicleModal({ onAdd, onClose }) {
           placeholder="17-character VIN"
           maxLength={17}
           style={{
-            width: '100%', padding: '10px 12px', borderRadius: '10px',
-            background: '#0f172a', color: COLORS.text,
-            border: `1px solid ${COLORS.bgCardBorder}`,
-            fontSize: '14px', fontFamily: 'monospace', outline: 'none',
-            boxSizing: 'border-box', letterSpacing: '1px',
+            ...inputStyle,
+            fontFamily: 'monospace', letterSpacing: '1px',
             marginBottom: '16px',
           }}
         />
