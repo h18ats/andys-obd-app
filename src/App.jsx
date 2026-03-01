@@ -859,6 +859,12 @@ function VehicleView({ connected, vinData, batteryVoltage, supportedPIDs, adapte
   const severityColor = { info: COLORS.accent, warning: COLORS.warn, critical: COLORS.fault };
   const statusColor = { active: COLORS.fault, explored: COLORS.warn, fixed: COLORS.ok };
 
+  // Reset edit/delete state when active vehicle changes
+  useEffect(() => {
+    setEditingNickname(false);
+    setConfirmDelete(false);
+  }, [activeVehicle?.id]);
+
   const startEdit = () => {
     setNicknameInput(activeVehicle?.nickname || '');
     setEditingNickname(true);
