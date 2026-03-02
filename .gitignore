@@ -4,4 +4,6 @@ ios/
 android/
 .capacitor/
 *.local
+*.key
+.env
 .DS_Store
