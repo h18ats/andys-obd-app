@@ -1,13 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Gauge, Card, Badge, Sparkline, Pulse, ErrorBoundary, COLORS } from './components/shared.jsx';
+import { Gauge, Card, Badge, Sparkline, Pulse, ErrorBoundary, COLORS, ActionButton, InfoRow } from './components/shared.jsx';
 import { scanForAdapters, stopScan, connect, disconnect, isConnected, getConnectionInfo } from './obd/ble-transport.js';
 import { initAdapter, queryPIDs, readStoredDTCs, readPendingDTCs, readPermanentDTCs, readVIN, readBatteryVoltage, querySupportedPIDs, readMonitorStatus, sendSafeCommand, clearQueue } from './obd/elm327.js';
 import { DASHBOARD_PIDS, DETAIL_PIDS, ALL_PIDS, PIDS } from './obd/obd-pids.js';
 import { ADAPTER_PROFILES } from './obd/adapter-profiles.js';
-import { getDatabaseSize } from './obd/dtc-database.js';
-import { getAuditLog } from './obd/command-safety.js';
 import { ROOF_CODES, ROOF_CCID_CODES, ROOF_FAILURE_POINTS, lookupRoofCode, lookupCCID, getRoofDatabaseSize } from './obd/roof-codes.js';
 import { decodeVIN } from './obd/vin-decoder.js';
+import VehicleView from './views/VehicleView.jsx';
 
 // --- Views ---
 const VIEWS = {
@@ -60,6 +59,37 @@ async function lookupVRN(vrn) {
     taxDueDate: '2026-11-01',
     co2Emissions: 136,
   };
+}
+
+// --- MOT/Tax expiry warning helper ---
+function getExpiryWarnings(vehicles) {
+  const now = new Date();
+  const warnings = [];
+  for (const v of vehicles) {
+    const dvla = v.dvlaData;
+    if (!dvla) continue;
+    const checks = [
+      { type: 'MOT', date: dvla.motExpiryDate, label: 'MOT' },
+      { type: 'Tax', date: dvla.taxDueDate, label: 'Tax' },
+    ];
+    for (const { type, date, label } of checks) {
+      if (!date) continue;
+      const expiry = new Date(date);
+      const diffMs = expiry - now;
+      const daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+      if (daysRemaining <= 30) {
+        warnings.push({
+          vehicleId: v.id,
+          vehicleName: v.nickname,
+          type: label,
+          date,
+          daysRemaining,
+          expired: daysRemaining < 0,
+        });
+      }
+    }
+  }
+  return warnings;
 }
 
 // --- History buffer for sparklines ---
@@ -368,6 +398,7 @@ export default function App() {
       addedAt: new Date().toISOString(),
       lastConnected: null,
       dtcHistory: [],
+      serviceLog: [],
     };
     setVehicles(prev => {
       const next = [...prev, vehicle];
@@ -419,6 +450,34 @@ export default function App() {
       return next;
     });
   }, []);
+
+  // --- Service log handlers ---
+  const handleAddService = useCallback((vehicleId, entry) => {
+    setVehicles(prev => {
+      const next = prev.map(v => {
+        if (v.id !== vehicleId) return v;
+        return { ...v, serviceLog: [...(v.serviceLog || []), entry] };
+      });
+      saveState('vehicles', next);
+      return next;
+    });
+  }, []);
+
+  const handleDeleteService = useCallback((vehicleId, serviceId) => {
+    setVehicles(prev => {
+      const next = prev.map(v => {
+        if (v.id !== vehicleId) return v;
+        return { ...v, serviceLog: (v.serviceLog || []).filter(s => s.id !== serviceId) };
+      });
+      saveState('vehicles', next);
+      return next;
+    });
+  }, []);
+
+  // --- Expiry warnings (derived) ---
+  const expiryWarnings = getExpiryWarnings(vehicles);
+  const hasExpiryWarning = expiryWarnings.length > 0;
+  const hasExpired = expiryWarnings.some(w => w.expired);
 
   // ==================== RENDER ====================
   return (
@@ -525,6 +584,9 @@ export default function App() {
               onEditVehicle={handleEditVehicle}
               onDeleteVehicle={handleDeleteVehicle}
               onUpdateDtcStatus={handleUpdateDtcStatus}
+              expiryWarnings={expiryWarnings}
+              onAddService={handleAddService}
+              onDeleteService={handleDeleteService}
             />
           )}
         </div>
@@ -554,12 +616,20 @@ export default function App() {
                 gap: '2px',
                 color: view === v ? COLORS.accent : COLORS.textMuted,
                 transition: 'color 0.2s',
+                position: 'relative',
               }}
             >
               <span style={{ fontSize: '18px' }}>{TAB_ICONS[v]}</span>
               <span style={{ fontSize: '10px', fontWeight: 600, letterSpacing: '0.03em' }}>
                 {TAB_LABELS[v]}
               </span>
+              {v === VIEWS.VEHICLE && hasExpiryWarning && (
+                <span style={{
+                  position: 'absolute', top: '6px', right: 'calc(50% - 16px)',
+                  width: '8px', height: '8px', borderRadius: '50%',
+                  background: hasExpired ? COLORS.fault : COLORS.warn,
+                }} />
+              )}
             </button>
           ))}
         </div>
@@ -880,369 +950,6 @@ function DTCList({ title, dtcs, emptyText }) {
   );
 }
 
-// ==================== VEHICLE VIEW ====================
-function VehicleView({ connected, vinData, batteryVoltage, supportedPIDs, adapterInfo, readingVehicle, onReadVehicle, vehicles, activeVehicle, onSelectVehicle, onShowAddVehicle, onEditVehicle, onDeleteVehicle, onUpdateDtcStatus }) {
-  const [editingNickname, setEditingNickname] = useState(false);
-  const [nicknameInput, setNicknameInput] = useState('');
-  const [confirmDelete, setConfirmDelete] = useState(false);
-
-  const severityColor = { info: COLORS.accent, warning: COLORS.warn, critical: COLORS.fault };
-  const statusColor = { active: COLORS.fault, explored: COLORS.warn, fixed: COLORS.ok };
-
-  // Reset edit/delete state when active vehicle changes
-  useEffect(() => {
-    setEditingNickname(false);
-    setConfirmDelete(false);
-  }, [activeVehicle?.id]);
-
-  const startEdit = () => {
-    setNicknameInput(activeVehicle?.nickname || '');
-    setEditingNickname(true);
-  };
-  const saveEdit = () => {
-    if (nicknameInput.trim() && activeVehicle) {
-      onEditVehicle(activeVehicle.id, nicknameInput.trim());
-    }
-    setEditingNickname(false);
-  };
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', paddingTop: '8px' }}>
-      {/* Vehicle switcher strip */}
-      <div style={{
-        display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '4px',
-        WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none',
-      }}>
-        {vehicles.map(v => (
-          <button
-            key={v.id}
-            onClick={() => onSelectVehicle(v.id)}
-            style={{
-              padding: '6px 14px', borderRadius: '16px', border: 'none',
-              background: v.id === activeVehicle?.id ? COLORS.accent : '#1e293b',
-              color: v.id === activeVehicle?.id ? '#fff' : COLORS.textDim,
-              fontSize: '12px', fontWeight: 600, cursor: 'pointer',
-              whiteSpace: 'nowrap', flexShrink: 0,
-              transition: 'all 0.2s',
-            }}
-          >
-            {v.nickname}
-          </button>
-        ))}
-        <button
-          onClick={onShowAddVehicle}
-          style={{
-            padding: '6px 14px', borderRadius: '16px',
-            border: `1px dashed ${COLORS.accent}60`,
-            background: 'transparent', color: COLORS.accent,
-            fontSize: '12px', fontWeight: 600, cursor: 'pointer',
-            whiteSpace: 'nowrap', flexShrink: 0,
-          }}
-        >
-          + Add
-        </button>
-      </div>
-
-      {/* Read Vehicle Info — only when connected */}
-      {connected && (
-        <ActionButton
-          label={readingVehicle ? 'Reading...' : 'Read Vehicle Info'}
-          color={COLORS.accent}
-          onClick={onReadVehicle}
-          disabled={readingVehicle}
-        />
-      )}
-      {!connected && vehicles.length === 0 && (
-        <div style={{ textAlign: 'center', padding: '30px 0', color: COLORS.textMuted }}>
-          <div style={{ fontSize: '40px', marginBottom: '12px' }}>🔌</div>
-          <p style={{ fontSize: '15px', fontWeight: 600, color: COLORS.textDim }}>Not Connected</p>
-          <p style={{ fontSize: '12px', marginTop: '4px' }}>Connect to read vehicle info, or tap "+ Add" to add a vehicle manually</p>
-        </div>
-      )}
-
-      {/* Active vehicle nickname + edit/delete */}
-      {activeVehicle && (
-        <Card>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            {editingNickname ? (
-              <div style={{ display: 'flex', gap: '6px', flex: 1 }}>
-                <input
-                  type="text"
-                  value={nicknameInput}
-                  onChange={e => setNicknameInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && saveEdit()}
-                  autoFocus
-                  style={{
-                    flex: 1, padding: '6px 10px', borderRadius: '8px',
-                    background: '#1e293b', color: COLORS.text,
-                    border: `1px solid ${COLORS.accent}`,
-                    fontSize: '14px', outline: 'none',
-                  }}
-                />
-                <button onClick={saveEdit} style={{
-                  padding: '6px 12px', borderRadius: '8px', border: 'none',
-                  background: COLORS.ok, color: '#fff', fontSize: '12px', fontWeight: 600, cursor: 'pointer',
-                }}>Save</button>
-                <button onClick={() => setEditingNickname(false)} style={{
-                  padding: '6px 12px', borderRadius: '8px', border: 'none',
-                  background: '#334155', color: COLORS.textDim, fontSize: '12px', fontWeight: 600, cursor: 'pointer',
-                }}>Cancel</button>
-              </div>
-            ) : (
-              <>
-                <div>
-                  <p style={{ fontSize: '16px', fontWeight: 700, color: COLORS.text, margin: 0 }}>
-                    {activeVehicle.nickname}
-                  </p>
-                  <p style={{ fontSize: '11px', color: COLORS.textMuted, margin: '2px 0 0' }}>
-                    Added {new Date(activeVehicle.addedAt).toLocaleDateString()}
-                  </p>
-                </div>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <button onClick={startEdit} style={{
-                    padding: '6px 10px', borderRadius: '8px', border: 'none',
-                    background: '#1e293b', color: COLORS.textDim, fontSize: '12px', cursor: 'pointer',
-                  }}>✏️</button>
-                  {confirmDelete ? (
-                    <>
-                      <button onClick={() => { onDeleteVehicle(activeVehicle.id); setConfirmDelete(false); }} style={{
-                        padding: '6px 10px', borderRadius: '8px', border: 'none',
-                        background: COLORS.fault, color: '#fff', fontSize: '11px', fontWeight: 600, cursor: 'pointer',
-                      }}>Confirm</button>
-                      <button onClick={() => setConfirmDelete(false)} style={{
-                        padding: '6px 10px', borderRadius: '8px', border: 'none',
-                        background: '#334155', color: COLORS.textDim, fontSize: '11px', fontWeight: 600, cursor: 'pointer',
-                      }}>Cancel</button>
-                    </>
-                  ) : (
-                    <button onClick={() => setConfirmDelete(true)} style={{
-                      padding: '6px 10px', borderRadius: '8px', border: 'none',
-                      background: '#1e293b', color: COLORS.textDim, fontSize: '12px', cursor: 'pointer',
-                    }}>🗑️</button>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        </Card>
-      )}
-
-      {/* VIN */}
-      {vinData && vinData.valid && (
-        <Card>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-            <p style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, margin: 0 }}>Vehicle Identification</p>
-            {vinData.isR56 && <Badge label="R56 Hatchback" variant="ok" />}
-            {vinData.isR57 && <Badge label="R57 Convertible" variant="ok" />}
-            {vinData.isMini && !vinData.isR56 && !vinData.isR57 && vinData.chassis && <Badge label={vinData.chassis} variant="info" />}
-            {vinData.isMini && !vinData.chassis && <Badge label="MINI" variant="info" />}
-          </div>
-          <div style={{
-            padding: '10px', borderRadius: '8px', background: '#1e293b',
-            fontFamily: 'monospace', fontSize: '15px', fontWeight: 700,
-            color: COLORS.accent, textAlign: 'center', letterSpacing: '2px',
-            marginBottom: '10px',
-          }}>
-            {vinData.vin}
-          </div>
-          <InfoRow label="Manufacturer" value={vinData.manufacturer} />
-          {vinData.model && <InfoRow label="Model" value={`MINI ${vinData.model}`} />}
-          {vinData.chassis && <InfoRow label="Chassis" value={vinData.chassis} />}
-          {vinData.bodyType && <InfoRow label="Body" value={vinData.bodyType} />}
-          {vinData.modelYear && <InfoRow label="Model Year" value={vinData.modelYear} />}
-          <InfoRow label="Serial" value={vinData.serial} />
-        </Card>
-      )}
-
-      {vinData && !vinData.valid && (
-        <Card style={{ borderColor: `${COLORS.warn}40` }}>
-          <p style={{ color: COLORS.warn, fontSize: '13px', margin: 0 }}>
-            VIN read failed: {vinData.error}
-          </p>
-        </Card>
-      )}
-
-      {/* DVLA Data */}
-      {activeVehicle?.dvlaData && (
-        <Card>
-          <p style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, marginBottom: '10px' }}>DVLA Vehicle Data</p>
-          <div style={{
-            padding: '10px', borderRadius: '8px', background: '#1e293b',
-            fontFamily: 'monospace', fontSize: '17px', fontWeight: 700,
-            color: COLORS.accent, textAlign: 'center', letterSpacing: '3px',
-            marginBottom: '10px',
-          }}>
-            {activeVehicle.dvlaData.registrationNumber}
-          </div>
-          <InfoRow label="Make" value={activeVehicle.dvlaData.make} />
-          <InfoRow label="Colour" value={activeVehicle.dvlaData.colour} />
-          <InfoRow label="Year" value={activeVehicle.dvlaData.yearOfManufacture} />
-          <InfoRow label="Engine" value={activeVehicle.dvlaData.engineCapacity ? `${activeVehicle.dvlaData.engineCapacity}cc` : null} />
-          <InfoRow label="Fuel" value={activeVehicle.dvlaData.fuelType} />
-          {activeVehicle.dvlaData.co2Emissions && (
-            <InfoRow label="CO₂" value={`${activeVehicle.dvlaData.co2Emissions} g/km`} />
-          )}
-          <div style={{ marginTop: '8px', display: 'flex', gap: '12px' }}>
-            <div style={{ flex: 1 }}>
-              <p style={{ fontSize: '11px', color: COLORS.textMuted, margin: '0 0 2px' }}>MOT</p>
-              <p style={{
-                fontSize: '13px', fontWeight: 600, margin: 0,
-                color: activeVehicle.dvlaData.motStatus === 'Valid' ? COLORS.ok : COLORS.fault,
-              }}>
-                {activeVehicle.dvlaData.motStatus}
-              </p>
-              {activeVehicle.dvlaData.motExpiryDate && (
-                <p style={{ fontSize: '11px', color: COLORS.textMuted, margin: '2px 0 0' }}>
-                  Expires {activeVehicle.dvlaData.motExpiryDate}
-                </p>
-              )}
-            </div>
-            <div style={{ flex: 1 }}>
-              <p style={{ fontSize: '11px', color: COLORS.textMuted, margin: '0 0 2px' }}>Tax</p>
-              <p style={{
-                fontSize: '13px', fontWeight: 600, margin: 0,
-                color: activeVehicle.dvlaData.taxStatus === 'Taxed' ? COLORS.ok : COLORS.fault,
-              }}>
-                {activeVehicle.dvlaData.taxStatus}
-              </p>
-              {activeVehicle.dvlaData.taxDueDate && (
-                <p style={{ fontSize: '11px', color: COLORS.textMuted, margin: '2px 0 0' }}>
-                  Due {activeVehicle.dvlaData.taxDueDate}
-                </p>
-              )}
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {/* Battery voltage */}
-      {batteryVoltage && (
-        <Card>
-          <p style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, marginBottom: '8px' }}>Battery</p>
-          <div style={{ fontSize: '28px', fontWeight: 700, color: COLORS.text }}>
-            {batteryVoltage}
-          </div>
-        </Card>
-      )}
-
-      {/* DTC History */}
-      {activeVehicle && (
-        <Card>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-            <p style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, margin: 0 }}>Fault History</p>
-            {activeVehicle.dtcHistory?.length > 0 && (
-              <Badge label={`${activeVehicle.dtcHistory.length}`} variant="info" />
-            )}
-          </div>
-          {(!activeVehicle.dtcHistory || activeVehicle.dtcHistory.length === 0) ? (
-            <p style={{ fontSize: '12px', color: COLORS.textMuted, margin: 0 }}>
-              No fault history yet. Read DTCs on the Diagnostics tab to start tracking.
-            </p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {[...activeVehicle.dtcHistory]
-                .sort((a, b) => (a.status === 'fixed' ? 1 : 0) - (b.status === 'fixed' ? 1 : 0))
-                .map(dtc => (
-                  <div key={dtc.id} style={{
-                    padding: '10px', borderRadius: '8px',
-                    background: `${severityColor[dtc.severity] || COLORS.accent}08`,
-                    borderLeft: `3px solid ${statusColor[dtc.status] || COLORS.fault}`,
-                    opacity: dtc.status === 'fixed' ? 0.5 : 1,
-                    transition: 'opacity 0.2s',
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '14px', fontWeight: 700, fontFamily: 'monospace', color: COLORS.text }}>
-                        {dtc.code}
-                      </span>
-                      <div style={{ display: 'flex', gap: '4px' }}>
-                        <Badge label={dtc.severity} variant={dtc.severity === 'critical' ? 'fault' : dtc.severity === 'warning' ? 'warn' : 'info'} />
-                        <Badge label={dtc.source} variant="info" />
-                      </div>
-                    </div>
-                    <p style={{ fontSize: '12px', color: COLORS.textDim, margin: '4px 0' }}>{dtc.desc}</p>
-                    <div style={{ fontSize: '10px', color: COLORS.textMuted, display: 'flex', gap: '12px', marginBottom: '6px' }}>
-                      <span>First: {new Date(dtc.firstSeen).toLocaleDateString()}</span>
-                      <span>Last: {new Date(dtc.lastSeen).toLocaleDateString()}</span>
-                      <span>×{dtc.occurrences}</span>
-                    </div>
-                    <div style={{ display: 'flex', gap: '4px' }}>
-                      {['active', 'explored', 'fixed'].map(s => (
-                        <button
-                          key={s}
-                          onClick={() => onUpdateDtcStatus(activeVehicle.id, dtc.id, s)}
-                          style={{
-                            flex: 1, padding: '5px 8px', borderRadius: '6px', border: 'none',
-                            background: dtc.status === s ? statusColor[s] : '#1e293b',
-                            color: dtc.status === s ? '#fff' : COLORS.textMuted,
-                            fontSize: '10px', fontWeight: 600, cursor: 'pointer',
-                            textTransform: 'capitalize', transition: 'all 0.2s',
-                          }}
-                        >
-                          {s}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-            </div>
-          )}
-        </Card>
-      )}
-
-      {/* Supported PIDs grid */}
-      {supportedPIDs.size > 0 && (
-        <Card>
-          <p style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, marginBottom: '10px' }}>
-            Supported PIDs ({supportedPIDs.size})
-          </p>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-            {[...supportedPIDs].sort().map((pid) => {
-              const def = PIDS[pid];
-              return (
-                <span key={pid} style={{
-                  padding: '4px 8px', borderRadius: '6px', fontSize: '11px',
-                  fontFamily: 'monospace', fontWeight: 600,
-                  background: def ? `${COLORS.ok}20` : `${COLORS.accent}15`,
-                  color: def ? COLORS.ok : COLORS.textDim,
-                }} title={def?.description || 'Unknown PID'}>
-                  {pid}
-                </span>
-              );
-            })}
-          </div>
-        </Card>
-      )}
-
-      {/* Adapter info */}
-      {adapterInfo && (
-        <Card>
-          <p style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, marginBottom: '8px' }}>Adapter</p>
-          <InfoRow label="Device" value={adapterInfo.deviceName} />
-          <InfoRow label="ELM327" value={adapterInfo.elmVersion} />
-          <InfoRow label="Protocol" value={adapterInfo.protocol} />
-        </Card>
-      )}
-
-      {/* DB stats */}
-      <Card>
-        <p style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, marginBottom: '8px' }}>Database</p>
-        <InfoRow label="Known DTCs" value={getDatabaseSize()} />
-        <InfoRow label="R57 Roof Codes" value={getRoofDatabaseSize()} />
-        <InfoRow label="Tracked PIDs" value={Object.keys(PIDS).length} />
-        <InfoRow label="Safety audit log" value={`${getAuditLog().length} entries`} />
-      </Card>
-
-      {/* Empty state — no vehicles at all */}
-      {vehicles.length === 0 && !readingVehicle && (
-        <div style={{ textAlign: 'center', padding: '30px 0', color: COLORS.textMuted }}>
-          <div style={{ fontSize: '36px', marginBottom: '8px' }}>🚗</div>
-          <p style={{ fontSize: '13px' }}>Add a vehicle or connect to read your VIN</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ==================== ROOF VIEW ====================
 function RoofView({ vinData }) {
   const [searchCode, setSearchCode] = useState('');
@@ -1531,42 +1238,6 @@ function NotConnected() {
       <div style={{ fontSize: '40px', marginBottom: '12px' }}>🔌</div>
       <p style={{ fontSize: '15px', fontWeight: 600, color: COLORS.textDim }}>Not Connected</p>
       <p style={{ fontSize: '12px', marginTop: '4px' }}>Go to the Connect tab to pair with your OBD adapter</p>
-    </div>
-  );
-}
-
-function ActionButton({ label, color, onClick, disabled }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        width: '100%',
-        padding: '14px',
-        borderRadius: '12px',
-        background: disabled ? '#334155' : color,
-        color: '#fff',
-        border: 'none',
-        fontSize: '15px',
-        fontWeight: 700,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled ? 0.6 : 1,
-        transition: 'all 0.2s',
-        letterSpacing: '0.02em',
-      }}
-    >
-      {label}
-    </button>
-  );
-}
-
-function InfoRow({ label, value }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: `1px solid ${COLORS.bgCardBorder}` }}>
-      <span style={{ fontSize: '12px', color: COLORS.textMuted }}>{label}</span>
-      <span style={{ fontSize: '12px', color: COLORS.text, fontWeight: 500, textAlign: 'right', maxWidth: '60%', wordBreak: 'break-word' }}>
-        {value ?? '—'}
-      </span>
     </div>
   );
 }

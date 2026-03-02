@@ -208,4 +208,42 @@ export class ErrorBoundary extends Component {
   }
 }
 
+// --- ActionButton (full-width CTA) ---
+export function ActionButton({ label, color, onClick, disabled }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        width: '100%',
+        padding: '14px',
+        borderRadius: '12px',
+        background: disabled ? '#334155' : color,
+        color: '#fff',
+        border: 'none',
+        fontSize: '15px',
+        fontWeight: 700,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.6 : 1,
+        transition: 'all 0.2s',
+        letterSpacing: '0.02em',
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+// --- InfoRow (label/value pair) ---
+export function InfoRow({ label, value }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: `1px solid ${COLORS.bgCardBorder}` }}>
+      <span style={{ fontSize: '12px', color: COLORS.textMuted }}>{label}</span>
+      <span style={{ fontSize: '12px', color: COLORS.text, fontWeight: 500, textAlign: 'right', maxWidth: '60%', wordBreak: 'break-word' }}>
+        {value ?? '—'}
+      </span>
+    </div>
+  );
+}
+
 export { COLORS };
