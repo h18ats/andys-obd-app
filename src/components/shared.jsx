@@ -246,4 +246,32 @@ export function InfoRow({ label, value }) {
   );
 }
 
+// --- NotConnected (empty state for views requiring BLE) ---
+export function NotConnected() {
+  return (
+    <div style={{ textAlign: 'center', padding: '60px 20px', color: COLORS.textMuted }}>
+      <div style={{ fontSize: '40px', marginBottom: '12px' }}>🔌</div>
+      <p style={{ fontSize: '15px', fontWeight: 600, color: COLORS.textDim }}>Not Connected</p>
+      <p style={{ fontSize: '12px', marginTop: '4px' }}>Go to the Connect tab to pair with your OBD adapter</p>
+    </div>
+  );
+}
+
+// --- SignalBars (BLE RSSI indicator) ---
+export function SignalBars({ rssi }) {
+  const bars = rssi > -50 ? 4 : rssi > -60 ? 3 : rssi > -70 ? 2 : 1;
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: '1px', height: '14px' }}>
+      {[1, 2, 3, 4].map((i) => (
+        <div key={i} style={{
+          width: '3px',
+          height: `${i * 3 + 2}px`,
+          borderRadius: '1px',
+          background: i <= bars ? COLORS.ok : COLORS.textMuted + '40',
+        }} />
+      ))}
+    </div>
+  );
+}
+
 export { COLORS };
