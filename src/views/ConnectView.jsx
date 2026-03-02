@@ -2,7 +2,7 @@ import React from 'react';
 import { Card, Badge, ActionButton, InfoRow, COLORS, SignalBars } from '../components/shared.jsx';
 import { ADAPTER_PROFILES } from '../obd/adapter-profiles.js';
 
-export default function ConnectView({ scanning, devices, connecting, connected, connectionError, selectedProfile, adapterInfo, onScan, onConnect, onDisconnect, onProfileChange }) {
+export default function ConnectView({ scanning, devices, connecting, connected, connectionError, selectedProfile, adapterInfo, onScan, onConnect, onDisconnect, onProfileChange, onDemoMode }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', paddingTop: '8px' }}>
       {/* Profile selector */}
@@ -116,6 +116,19 @@ export default function ConnectView({ scanning, devices, connecting, connected, 
           <p style={{ fontSize: '11px', marginTop: '6px', maxWidth: '260px', margin: '6px auto 0' }}>
             Supports Vgate iCar Pro, OBDLink CX, Veepeak, and generic ELM327 BLE adapters
           </p>
+          {onDemoMode && (
+            <button
+              onClick={onDemoMode}
+              style={{
+                marginTop: '24px', padding: '10px 24px', borderRadius: '10px',
+                background: 'none', border: `1px solid ${COLORS.textMuted}40`,
+                color: COLORS.textDim, fontSize: '13px', fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              Try Demo Mode
+            </button>
+          )}
         </div>
       )}
     </div>

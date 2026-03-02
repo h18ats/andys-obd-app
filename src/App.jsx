@@ -456,6 +456,130 @@ export default function App() {
     });
   }, []);
 
+  // --- Demo mode ---
+  const demoRef = useRef(null);
+
+  const generateDemoData = useCallback((base) => {
+    const jitter = (v, range) => Math.max(0, v + (Math.random() - 0.5) * range);
+    return {
+      '0C': { value: jitter(base?.['0C']?.value ?? 2200, 400), unit: 'rpm', warn: false, name: 'RPM' },
+      '0D': { value: jitter(base?.['0D']?.value ?? 45, 10), unit: 'km/h', warn: false, name: 'Speed' },
+      '05': { value: jitter(base?.['05']?.value ?? 88, 3), unit: '°C', warn: false, name: 'Coolant' },
+      '0B': { value: jitter(base?.['0B']?.value ?? 101, 8), unit: 'kPa', warn: false, name: 'Boost' },
+      '04': { value: jitter(base?.['04']?.value ?? 32, 8), unit: '%', warn: false, name: 'Load' },
+      '11': { value: jitter(base?.['11']?.value ?? 18, 6), unit: '%', warn: false, name: 'Throttle' },
+      '0F': { value: jitter(base?.['0F']?.value ?? 28, 2), unit: '°C', warn: false, name: 'IAT' },
+      '06': { value: jitter(base?.['06']?.value ?? 2.3, 3), unit: '%', warn: false, name: 'STFT B1' },
+      '07': { value: jitter(base?.['07']?.value ?? -1.5, 2), unit: '%', warn: false, name: 'LTFT B1' },
+      '10': { value: jitter(base?.['10']?.value ?? 8.4, 3), unit: 'g/s', warn: false, name: 'MAF' },
+    };
+  }, []);
+
+  const handleDemoMode = useCallback(() => {
+    // Set connected state
+    setConnected(true);
+    setAdapterInfo({ deviceName: 'Demo Adapter', elmVersion: 'ELM327 v2.1 (Demo)', protocol: 'ISO 15765-4 CAN' });
+    setView(VIEWS.DASHBOARD);
+
+    // Create a demo vehicle
+    const demoVehicle = {
+      id: 'v_demo',
+      nickname: 'Betty',
+      vinData: {
+        valid: true, vin: 'WMWSS3C56CT123456',
+        make: 'MINI', model: 'Cooper S', body: 'Convertible',
+        chassis: 'R57', year: 2012, isR57: true,
+      },
+      vrn: 'AB12CDE',
+      dvlaData: {
+        registrationNumber: 'AB12CDE', make: 'MINI', colour: 'WHITE',
+        yearOfManufacture: 2012, engineCapacity: 1598, fuelType: 'PETROL',
+        motStatus: 'Valid', motExpiryDate: '2026-08-15',
+        taxStatus: 'Taxed', taxDueDate: '2026-11-01', co2Emissions: 136,
+      },
+      addedAt: new Date().toISOString(),
+      lastConnected: new Date().toISOString(),
+      dtcHistory: [],
+      serviceLog: [],
+    };
+    setVehicles([demoVehicle]);
+    setActiveVehicleId('v_demo');
+    setBatteryVoltage(12.6);
+    setSupportedPIDs(new Set(['0C', '0D', '05', '0B', '04', '11', '0F', '06', '07', '10']));
+
+    // Mock DTCs
+    setStoredDTCs([
+      { code: 'P0171', desc: 'System Too Lean (Bank 1)', severity: 'warning' },
+      { code: 'P0420', desc: 'Catalyst System Efficiency Below Threshold', severity: 'info' },
+    ]);
+    setPendingDTCs([
+      { code: 'P0301', desc: 'Cylinder 1 Misfire Detected', severity: 'critical' },
+    ]);
+    setPermanentDTCs([]);
+    setMonitorStatus({
+      milOn: true, dtcCount: 3,
+      monitors: {
+        catalyst: { supported: true, complete: true },
+        heatedCatalyst: { supported: false, complete: false },
+        evaporativeSystem: { supported: true, complete: false },
+        secondaryAirSystem: { supported: false, complete: false },
+        acRefrigerant: { supported: false, complete: false },
+        oxygenSensor: { supported: true, complete: true },
+        oxygenSensorHeater: { supported: true, complete: true },
+        egrSystem: { supported: true, complete: false },
+        misfire: { supported: true, complete: true },
+        fuelSystem: { supported: true, complete: true },
+        components: { supported: true, complete: true },
+      },
+    });
+
+    // Start fake polling
+    const initialData = generateDemoData(null);
+    setLiveData(initialData);
+    for (const [pid, data] of Object.entries(initialData)) {
+      if (data?.value !== undefined) history.push(pid, data.value);
+    }
+    setPolling(true);
+
+    demoRef.current = setInterval(() => {
+      setLiveData(prev => {
+        const next = generateDemoData(prev);
+        for (const [pid, data] of Object.entries(next)) {
+          if (data?.value !== undefined) history.push(pid, data.value);
+        }
+        return next;
+      });
+    }, 600);
+  }, [generateDemoData, history]);
+
+  const handleExitDemo = useCallback(() => {
+    if (demoRef.current) {
+      clearInterval(demoRef.current);
+      demoRef.current = null;
+    }
+    setPolling(false);
+    setConnected(false);
+    setAdapterInfo(null);
+    setLiveData({});
+    history.clear();
+    setStoredDTCs([]);
+    setPendingDTCs([]);
+    setPermanentDTCs([]);
+    setMonitorStatus(null);
+    setVehicles([]);
+    setActiveVehicleId(null);
+    setBatteryVoltage(null);
+    setSupportedPIDs(new Set());
+    setView(VIEWS.CONNECT);
+  }, [history]);
+
+  // Cleanup demo interval on unmount
+  useEffect(() => {
+    return () => { if (demoRef.current) clearInterval(demoRef.current); };
+  }, []);
+
+  const isDemo = demoRef.current !== null;
+
   // --- Expiry warnings (derived) ---
   const expiryWarnings = getExpiryWarnings(vehicles);
   const hasExpiryWarning = expiryWarnings.length > 0;
@@ -502,6 +626,7 @@ export default function App() {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             {connected && <Pulse color={COLORS.ok} size={8} />}
+            {isDemo && <Badge label="DEMO" variant="warn" />}
             <Badge
               label={connected ? 'Connected' : 'Disconnected'}
               variant={connected ? 'ok' : 'info'}
@@ -522,8 +647,9 @@ export default function App() {
               adapterInfo={adapterInfo}
               onScan={handleScan}
               onConnect={handleConnect}
-              onDisconnect={handleDisconnect}
+              onDisconnect={isDemo ? handleExitDemo : handleDisconnect}
               onProfileChange={setSelectedProfile}
+              onDemoMode={handleDemoMode}
             />
           )}
           {view === VIEWS.DASHBOARD && (
