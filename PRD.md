@@ -24,9 +24,12 @@ BMW MINI R56/R57 (2006–2013). R57 convertible roof diagnostics are a first-cla
 ### 1. BLE Adapter Connection (Connect Tab)
 
 - Scan for BLE OBD-II adapters with known adapter profile matching
+- **Multi-protocol selection**: All 10 ELM327 protocols (ATSP0–9) — CAN, K-line, J1850, KWP. Default: protocol 6 (ISO 15765-4 CAN 11-bit 500k). Auto-detect (ATSP0) available with 10s timeout.
+- **Custom adapter profiles**: User-defined GATT profiles for adapters with non-standard UUIDs. CRUD with UUID validation (4-char short hex or 36-char 128-bit). Persisted as `obd_custom_profiles` in localStorage. Custom profiles appear in adapter profile dropdown and are included in BLE scan service UUIDs.
 - One-tap connect/disconnect
 - Connection status with signal quality indicator
 - Adapter info display (firmware, protocol, voltage)
+- **Demo mode**: Simulated adapter with fake live data, mock DTCs, and a pre-populated demo vehicle (Betty, R57 Cooper S)
 
 ### 2. Live Data Dashboard (Dashboard Tab)
 
@@ -34,6 +37,15 @@ BMW MINI R56/R57 (2006–2013). R57 convertible roof diagnostics are a first-cla
 - SVG circular arc gauges with colour-coded thresholds (blue → amber → red)
 - Sparkline mini-charts showing recent history per PID
 - Configurable polling interval
+
+### 2b. Custom Dashboard (Custom Tab)
+
+- User-configurable widgets for any supported PID
+- Three display types: gauge, number readout, bar gauge
+- Widget sizes: small, medium, large
+- Full PID catalog (all standard OBD-II PIDs) available for widget selection
+- Add/remove widgets, persisted as `obd_custom_widgets` in localStorage
+- Custom widget PIDs automatically included in polling cycle
 
 ### 3. Diagnostic Trouble Codes (Diagnostics Tab)
 
@@ -55,6 +67,7 @@ BMW MINI R56/R57 (2006–2013). R57 convertible roof diagnostics are a first-cla
 
 #### 5a. Multi-Vehicle Support
 - Add vehicles manually (nickname + optional VIN)
+- **Add current vehicle**: Read VIN from connected adapter, display decoded VIN summary card (model, chassis, year, body), pre-fill nickname
 - Add vehicles via DVLA VRN lookup (auto-populates make, model, colour, MOT/tax dates)
 - Horizontal scrollable chip strip for vehicle switching
 - Inline edit nickname, inline delete with two-tap confirmation
@@ -105,26 +118,70 @@ BMW MINI R56/R57 (2006–2013). R57 convertible roof diagnostics are a first-cla
 }
 ```
 
+### Custom Adapter Profile
+```
+{
+  id, name,
+  serviceUUID,   // 4-char short hex or 36-char 128-bit
+  writeUUID,
+  notifyUUID,
+  mtu            // 20–512
+}
+```
+
+### Custom Widget
+```
+{
+  id, pid,       // OBD PID code (e.g. '0C')
+  display,       // 'gauge' | 'number' | 'bar'
+  size,          // 'sm' | 'md' | 'lg'
+  order          // position index
+}
+```
+
 ### Persistence
 - `obd_vehicles` — vehicle array
 - `obd_active_vehicle` — active vehicle ID
+- `obd_protocol` — ELM327 protocol code ('0'–'9', default '6')
+- `obd_custom_profiles` — custom BLE adapter profiles array
+- `obd_custom_widgets` — `{ widgets: [...], version: 1 }`
 - Legacy `obd_vin` auto-migrated on first load
 
 ## UI Architecture
 
-- 5-tab bottom navigation: Connect, Live, DTCs, Roof, Vehicle
+- 6-tab bottom navigation: Connect, Live, Custom, DTCs, Roof, Vehicle
 - Dark theme (glassmorphic cards, blue accent #3b82f6)
-- Shared components: Gauge, Card, Badge, Sparkline, Pulse, ErrorBoundary, ActionButton, InfoRow
+- Shared components: Gauge, Card, Badge, Sparkline, Pulse, ErrorBoundary, ActionButton, InfoRow, NumberReadout, SignalBars
 - iOS safe-area handled by tab bar (single owner)
-- No routing library — view state managed by `activeView` string
+- Hash-based routing (`#connect`, `#dashboard`, `#custom`, `#diagnostics`, `#roof`, `#vehicle`)
 
 ## File Structure
 
 ```
-src/App.jsx           — ~1463 lines (Connect, Dashboard, Diagnostics, Roof views + tab bar + state)
-src/views/VehicleView.jsx — ~628 lines (Vehicle tab)
-src/components/shared.jsx — ~249 lines (shared components + COLORS)
-src/obd/*.js          — 8 modules (BLE, ELM327, PIDs, adapters, safety, DTCs, roof, VIN)
+src/App.jsx                        — Main app. State, handlers, tab bar, modal orchestration.
+src/views/
+  ConnectView.jsx                  — Connect tab: scan, profile/protocol selection, custom profiles
+  DashboardView.jsx                — Live data tab: PID gauges, sparklines
+  CustomDashboardView.jsx          — Custom dashboard tab: configurable widgets
+  DiagnosticsView.jsx              — DTCs tab: stored/pending/permanent DTCs, monitor status
+  RoofView.jsx                     — Roof tab: R57 fault codes, CCID lookup
+  VehicleView.jsx                  — Vehicle tab: multi-vehicle, DVLA, service log, share report
+  AddVehicleModal.jsx              — Add vehicle modal with VRN lookup + prefill VIN
+src/components/
+  shared.jsx                       — Shared UI components + COLORS constant
+  BarGauge.jsx                     — Horizontal bar gauge widget
+  WidgetConfigModal.jsx            — Widget configuration modal for custom dashboard
+  CustomProfileModal.jsx           — Custom BLE adapter profile modal
+src/obd/
+  ble-transport.js                 — BLE scanning, connect, disconnect, characteristic I/O
+  elm327.js                        — ELM327 AT commands, PID queries, DTC read/clear, VIN read
+  obd-pids.js                      — Core PID definitions and decoders
+  pid-catalog.js                   — Full OBD-II PID catalog for widget selection
+  adapter-profiles.js              — Adapter profiles, OBD protocols, custom profile CRUD
+  command-safety.js                — Command whitelist/safety classification
+  dtc-database.js                  — DTC code → description lookup
+  roof-codes.js                    — R57 convertible roof fault codes, CCID codes
+  vin-decoder.js                   — VIN structure decode (WMI, VDS, VIS)
 ```
 
 ## Known Limitations
@@ -137,9 +194,14 @@ src/obd/*.js          — 8 modules (BLE, ELM327, PIDs, adapters, safety, DTCs, 
 
 ## Roadmap
 
-1. Real DVLA VES API integration (when API key arrives)
-2. Odometer/mileage tracking from OBD PID 0x31 (auto-populate service mileage)
-3. Extract remaining views from App.jsx (Dashboard, Diagnostics, Roof)
-4. DTC history export/share
-5. Notes field on DTC history entries
-6. Cloud sync (iCloud or Supabase) for cross-device persistence
+- [x] ~~Extract remaining views from App.jsx~~ — Done (Connect, Dashboard, Custom, Diagnostics, Roof all extracted)
+- [x] ~~Multi-protocol support~~ — Done (ATSP0–9, auto-detect with extended timeout)
+- [x] ~~Custom adapter profiles~~ — Done (CRUD, UUID validation, dynamic scan UUIDs)
+- [x] ~~Custom dashboard with configurable widgets~~ — Done (gauge/number/bar, full PID catalog)
+- [x] ~~Demo mode~~ — Done (simulated live data, mock DTCs, demo vehicle)
+- [x] ~~Add current vehicle from adapter~~ — Done (VIN read + prefill modal)
+- [ ] Real DVLA VES API integration (when API key arrives)
+- [ ] Odometer/mileage tracking from OBD PID 0x31 (auto-populate service mileage)
+- [ ] DTC history export/share
+- [ ] Notes field on DTC history entries
+- [ ] Cloud sync (iCloud or Supabase) for cross-device persistence

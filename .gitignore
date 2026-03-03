@@ -7,3 +7,5 @@ android/
 *.key
 .env
 .DS_Store
+release.keystore
+*.apk
