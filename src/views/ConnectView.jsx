@@ -1,8 +1,14 @@
 import React from 'react';
 import { Card, Badge, ActionButton, InfoRow, COLORS, SignalBars } from '../components/shared.jsx';
-import { ADAPTER_PROFILES } from '../obd/adapter-profiles.js';
+import { ADAPTER_PROFILES, OBD_PROTOCOLS } from '../obd/adapter-profiles.js';
 
-export default function ConnectView({ scanning, devices, connecting, connected, connectionError, selectedProfile, adapterInfo, onScan, onConnect, onDisconnect, onProfileChange, onDemoMode }) {
+export default function ConnectView({ scanning, devices, connecting, connected, connectionError, selectedProfile, selectedProtocol, customProfiles, adapterInfo, onScan, onConnect, onDisconnect, onProfileChange, onProtocolChange, onShowCustomProfile, onDeleteCustomProfile, onDemoMode }) {
+  const selectStyle = {
+    width: '100%', padding: '10px 12px', borderRadius: '10px',
+    background: '#1e293b', color: COLORS.text, border: `1px solid ${COLORS.bgCardBorder}`,
+    fontSize: '14px', outline: 'none',
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', paddingTop: '8px' }}>
       {/* Profile selector */}
@@ -14,17 +20,90 @@ export default function ConnectView({ scanning, devices, connecting, connected, 
           value={selectedProfile}
           onChange={(e) => onProfileChange(e.target.value)}
           disabled={connected}
-          style={{
-            width: '100%', padding: '10px 12px', borderRadius: '10px',
-            background: '#1e293b', color: COLORS.text, border: `1px solid ${COLORS.bgCardBorder}`,
-            fontSize: '14px', outline: 'none',
-          }}
+          style={selectStyle}
         >
           <option value="auto">Auto-detect</option>
           {Object.entries(ADAPTER_PROFILES).map(([key, p]) => (
             <option key={key} value={key}>{p.name}</option>
           ))}
+          {customProfiles.length > 0 && (
+            <optgroup label="Custom Profiles">
+              {customProfiles.map(cp => (
+                <option key={cp.id} value={cp.id}>{cp.name}</option>
+              ))}
+            </optgroup>
+          )}
         </select>
+
+        {/* Custom profile cards */}
+        {customProfiles.length > 0 && (
+          <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {customProfiles.map(cp => (
+              <div key={cp.id} style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                padding: '8px 10px', borderRadius: '8px', background: '#0f172a',
+                border: `1px solid ${COLORS.bgCardBorder}`,
+              }}>
+                <div>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: COLORS.text }}>{cp.name}</div>
+                  <div style={{ fontSize: '10px', color: COLORS.textMuted, fontFamily: 'monospace', marginTop: '2px' }}>
+                    {cp.serviceUUID} / MTU {cp.mtu}
+                  </div>
+                </div>
+                <button
+                  onClick={() => onDeleteCustomProfile(cp.id)}
+                  disabled={connected}
+                  style={{
+                    padding: '4px 8px', borderRadius: '6px', border: 'none',
+                    background: `${COLORS.fault}20`, color: COLORS.fault,
+                    fontSize: '11px', fontWeight: 600, cursor: connected ? 'not-allowed' : 'pointer',
+                    opacity: connected ? 0.4 : 1,
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!connected && (
+          <button
+            onClick={onShowCustomProfile}
+            style={{
+              marginTop: '10px', padding: '6px 0', width: '100%',
+              background: 'none', border: 'none',
+              color: COLORS.accent, fontSize: '13px', fontWeight: 600,
+              cursor: 'pointer', textAlign: 'center',
+            }}
+          >
+            + Custom Profile
+          </button>
+        )}
+      </Card>
+
+      {/* Protocol selector */}
+      <Card>
+        <label style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, marginBottom: '8px', display: 'block' }}>
+          OBD Protocol
+        </label>
+        <select
+          value={selectedProtocol}
+          onChange={(e) => onProtocolChange(e.target.value)}
+          disabled={connected}
+          style={selectStyle}
+        >
+          {OBD_PROTOCOLS.map(p => (
+            <option key={p.code} value={p.code}>
+              {p.label} ({p.desc})
+            </option>
+          ))}
+        </select>
+        {selectedProtocol === '0' && (
+          <p style={{ fontSize: '11px', color: COLORS.textMuted, margin: '6px 0 0' }}>
+            Auto-detect tries all protocols. Slower initial connect (~10s).
+          </p>
+        )}
       </Card>
 
       {/* Scan / Disconnect button */}

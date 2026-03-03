@@ -9,7 +9,7 @@
  * the adapter is ready for the next command.
  */
 
-import { SCAN_SERVICE_UUIDS, matchProfile } from './adapter-profiles.js';
+import { getScanServiceUUIDs, matchProfile } from './adapter-profiles.js';
 
 let BleClient = null;
 let bleLoadError = null;
@@ -66,7 +66,7 @@ export async function scanForAdapters(onDeviceFound, timeoutMs = SCAN_TIMEOUT_MS
     }, timeoutMs);
 
     BleClient.requestLEScan(
-      { services: SCAN_SERVICE_UUIDS, allowDuplicates: false },
+      { services: getScanServiceUUIDs(), allowDuplicates: false },
       (result) => {
         onDeviceFound({
           deviceId: result.device.deviceId,

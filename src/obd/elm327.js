@@ -96,11 +96,12 @@ export async function sendSafeCommand(command, timeoutMs = 5000) {
 
 /**
  * Initialise the ELM327 adapter.
- * Runs the standard init sequence to configure for OBD-II CAN protocol.
+ * Runs the standard init sequence to configure for the selected OBD protocol.
  *
+ * @param {string} [protocolCode='6'] - ELM327 protocol code (0-9). '0' = auto-detect.
  * @returns {Promise<{ elmVersion: string, protocol: string }>}
  */
-export async function initAdapter() {
+export async function initAdapter(protocolCode = '6') {
   // Reset
   const resetResp = await sendSafeCommand('ATZ', 3000);
 
@@ -112,13 +113,14 @@ export async function initAdapter() {
   await sendSafeCommand('ATL0');   // Linefeeds off
   await sendSafeCommand('ATS0');   // Spaces off (we'll parse raw hex)
   await sendSafeCommand('ATH0');   // Headers off
-  await sendSafeCommand('ATSP6');  // Protocol 6 = ISO 15765-4 CAN (11-bit, 500 kbaud) — R56 default
+  await sendSafeCommand(`ATSP${protocolCode}`);
 
   // Re-enable spaces for easier parsing
   await sendSafeCommand('ATS1');
 
-  // Describe the detected protocol
-  const protocol = await sendSafeCommand('ATDP');
+  // Describe the detected protocol — auto-detect (ATSP0) needs longer timeout
+  const dpTimeout = protocolCode === '0' ? 10000 : 5000;
+  const protocol = await sendSafeCommand('ATDP', dpTimeout);
 
   return {
     elmVersion: version || 'Unknown',

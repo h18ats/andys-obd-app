@@ -1,21 +1,26 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Pulse, ErrorBoundary, COLORS, Badge } from './components/shared.jsx';
 import { scanForAdapters, connect, disconnect, isConnected } from './obd/ble-transport.js';
 import { initAdapter, queryPIDs, readStoredDTCs, readPendingDTCs, readPermanentDTCs, readVIN, readBatteryVoltage, querySupportedPIDs, readMonitorStatus, clearQueue } from './obd/elm327.js';
-import { ALL_PIDS } from './obd/obd-pids.js';
-import { ADAPTER_PROFILES } from './obd/adapter-profiles.js';
+import { ALL_PIDS, PIDS } from './obd/obd-pids.js';
+import { ADAPTER_PROFILES, getAllProfiles, loadCustomProfiles, saveCustomProfile, deleteCustomProfile } from './obd/adapter-profiles.js';
 import { decodeVIN } from './obd/vin-decoder.js';
+import { getAllCatalogPIDs } from './obd/pid-catalog.js';
 import ConnectView from './views/ConnectView.jsx';
 import DashboardView from './views/DashboardView.jsx';
+import CustomDashboardView from './views/CustomDashboardView.jsx';
 import DiagnosticsView from './views/DiagnosticsView.jsx';
 import RoofView from './views/RoofView.jsx';
 import VehicleView from './views/VehicleView.jsx';
 import AddVehicleModal from './views/AddVehicleModal.jsx';
+import WidgetConfigModal from './components/WidgetConfigModal.jsx';
+import CustomProfileModal from './components/CustomProfileModal.jsx';
 
 // --- Views ---
 const VIEWS = {
   CONNECT: 'connect',
   DASHBOARD: 'dashboard',
+  CUSTOM: 'custom',
   DIAGNOSTICS: 'diagnostics',
   ROOF: 'roof',
   VEHICLE: 'vehicle',
@@ -24,6 +29,7 @@ const VIEWS = {
 const TAB_ICONS = {
   [VIEWS.CONNECT]: '⚡',
   [VIEWS.DASHBOARD]: '◎',
+  [VIEWS.CUSTOM]: '▣',
   [VIEWS.DIAGNOSTICS]: '⚠',
   [VIEWS.ROOF]: '▽',
   [VIEWS.VEHICLE]: '🚗',
@@ -32,6 +38,7 @@ const TAB_ICONS = {
 const TAB_LABELS = {
   [VIEWS.CONNECT]: 'Connect',
   [VIEWS.DASHBOARD]: 'Live',
+  [VIEWS.CUSTOM]: 'Custom',
   [VIEWS.DIAGNOSTICS]: 'DTCs',
   [VIEWS.ROOF]: 'Roof',
   [VIEWS.VEHICLE]: 'Vehicle',
@@ -111,6 +118,9 @@ export default function App() {
   const [adapterInfo, setAdapterInfo] = useState(null);
   const [connectionError, setConnectionError] = useState(null);
   const [selectedProfile, setSelectedProfile] = useState('auto');
+  const [selectedProtocol, setSelectedProtocol] = useState(() => loadState('protocol', '6'));
+  const [customProfiles, setCustomProfiles] = useState(() => loadCustomProfiles());
+  const [showCustomProfile, setShowCustomProfile] = useState(false);
 
   // Live data
   const [liveData, setLiveData] = useState({});
@@ -149,9 +159,24 @@ export default function App() {
   });
   const [activeVehicleId, setActiveVehicleId] = useState(() => loadState('active_vehicle', null));
   const [showAddVehicle, setShowAddVehicle] = useState(false);
+  const [addVehicleVin, setAddVehicleVin] = useState(null);
   const [batteryVoltage, setBatteryVoltage] = useState(null);
   const [supportedPIDs, setSupportedPIDs] = useState(new Set());
   const [readingVehicle, setReadingVehicle] = useState(false);
+
+  // Custom dashboard widgets
+  const [customWidgets, setCustomWidgets] = useState(() => {
+    const stored = loadState('custom_widgets', null);
+    return stored?.version === 1 ? stored : { widgets: [], version: 1 };
+  });
+  const [showWidgetConfig, setShowWidgetConfig] = useState(false);
+
+  // Derived: active PID set = original 10 + custom widget PIDs
+  const activePids = useMemo(() => {
+    const pids = new Set(ALL_PIDS);
+    for (const w of customWidgets.widgets) pids.add(w.pid);
+    return [...pids];
+  }, [customWidgets.widgets]);
 
   // Derived state (backward-compatible)
   const activeVehicle = vehicles.find(v => v.id === activeVehicleId) || vehicles[0] || null;
@@ -191,10 +216,10 @@ export default function App() {
     setConnecting(true);
     setConnectionError(null);
     try {
-      const profile = selectedProfile === 'auto' ? undefined : ADAPTER_PROFILES[selectedProfile];
+      const profile = selectedProfile === 'auto' ? undefined : getAllProfiles()[selectedProfile];
       await connect(device.deviceId, device.name, profile);
 
-      const info = await initAdapter();
+      const info = await initAdapter(selectedProtocol);
       setAdapterInfo({ ...info, deviceName: device.name });
       setConnected(true);
       setView(VIEWS.DASHBOARD);
@@ -203,7 +228,7 @@ export default function App() {
       try { await disconnect(); } catch {}
     }
     setConnecting(false);
-  }, [selectedProfile]);
+  }, [selectedProfile, selectedProtocol]);
 
   // --- Disconnect ---
   const handleDisconnect = useCallback(async () => {
@@ -226,7 +251,7 @@ export default function App() {
 
     while (pollingRef.current && isConnected()) {
       try {
-        const results = await queryPIDs(ALL_PIDS);
+        const results = await queryPIDs(activePidsRef.current);
         setLiveData(results);
         for (const [pid, data] of Object.entries(results)) {
           if (data?.value !== undefined) history.push(pid, data.value);
@@ -245,7 +270,7 @@ export default function App() {
     }
 
     setPolling(false);
-  }, []);
+  }, [activePids]);
 
   const stopPolling = useCallback(() => {
     pollingRef.current = false;
@@ -363,6 +388,23 @@ export default function App() {
     setReadingVehicle(false);
   }, []);
 
+  // --- Read VIN then open Add Vehicle modal ---
+  const handleReadAndAddVehicle = useCallback(async () => {
+    setReadingVehicle(true);
+    try {
+      const vinRaw = await readVIN();
+      if (vinRaw?.valid) {
+        setAddVehicleVin(vinRaw);
+        setShowAddVehicle(true);
+      } else {
+        setConnectionError(vinRaw?.error || 'Could not read VIN from adapter');
+      }
+    } catch (err) {
+      setConnectionError(err.message || 'VIN read failed');
+    }
+    setReadingVehicle(false);
+  }, []);
+
   // --- Vehicle management handlers ---
   const handleSelectVehicle = useCallback((id) => {
     setActiveVehicleId(id);
@@ -370,7 +412,7 @@ export default function App() {
   }, []);
 
   const handleAddVehicle = useCallback((nickname, vinString, vrn, dvlaData) => {
-    const vinResult = vinString ? decodeVIN(vinString) : null;
+    const vinResult = addVehicleVin || (vinString ? decodeVIN(vinString) : null);
     const vehicle = {
       id: `v_${Date.now()}`,
       nickname: nickname || 'New Vehicle',
@@ -378,7 +420,7 @@ export default function App() {
       vrn: vrn || null,
       dvlaData: dvlaData || null,
       addedAt: new Date().toISOString(),
-      lastConnected: null,
+      lastConnected: addVehicleVin ? new Date().toISOString() : null,
       dtcHistory: [],
       serviceLog: [],
     };
@@ -390,7 +432,8 @@ export default function App() {
     setActiveVehicleId(vehicle.id);
     saveState('active_vehicle', vehicle.id);
     setShowAddVehicle(false);
-  }, []);
+    setAddVehicleVin(null);
+  }, [addVehicleVin]);
 
   const handleEditVehicle = useCallback((id, nickname) => {
     setVehicles(prev => {
@@ -456,23 +499,83 @@ export default function App() {
     });
   }, []);
 
+  // --- Custom widget handlers ---
+  const handleAddWidget = useCallback(({ pid, display, size }) => {
+    setCustomWidgets(prev => {
+      const next = {
+        ...prev,
+        widgets: [
+          ...prev.widgets,
+          {
+            id: `w_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            pid,
+            display,
+            size,
+            order: prev.widgets.length,
+          },
+        ],
+      };
+      saveState('custom_widgets', next);
+      return next;
+    });
+    setShowWidgetConfig(false);
+  }, []);
+
+  const handleRemoveWidget = useCallback((widgetId) => {
+    setCustomWidgets(prev => {
+      const filtered = prev.widgets.filter(w => w.id !== widgetId);
+      const reordered = filtered.map((w, i) => ({ ...w, order: i }));
+      const next = { ...prev, widgets: reordered };
+      saveState('custom_widgets', next);
+      return next;
+    });
+  }, []);
+
+  // --- Protocol + custom profile handlers ---
+  const handleProtocolChange = useCallback((code) => {
+    setSelectedProtocol(code);
+    saveState('protocol', code);
+  }, []);
+
+  const handleSaveCustomProfile = useCallback((profile) => {
+    const updated = saveCustomProfile(profile);
+    setCustomProfiles(updated);
+    setShowCustomProfile(false);
+  }, []);
+
+  const handleDeleteCustomProfile = useCallback((id) => {
+    const updated = deleteCustomProfile(id);
+    setCustomProfiles(updated);
+    if (selectedProfile === id) setSelectedProfile('auto');
+  }, [selectedProfile]);
+
   // --- Demo mode ---
   const demoRef = useRef(null);
+  const activePidsRef = useRef(activePids);
+  activePidsRef.current = activePids;
 
-  const generateDemoData = useCallback((base) => {
+  const generateDemoData = useCallback((base, pidsToGenerate) => {
     const jitter = (v, range) => Math.max(0, v + (Math.random() - 0.5) * range);
-    return {
-      '0C': { value: jitter(base?.['0C']?.value ?? 2200, 400), unit: 'rpm', warn: false, name: 'RPM' },
-      '0D': { value: jitter(base?.['0D']?.value ?? 45, 10), unit: 'km/h', warn: false, name: 'Speed' },
-      '05': { value: jitter(base?.['05']?.value ?? 88, 3), unit: '°C', warn: false, name: 'Coolant' },
-      '0B': { value: jitter(base?.['0B']?.value ?? 101, 8), unit: 'kPa', warn: false, name: 'Boost' },
-      '04': { value: jitter(base?.['04']?.value ?? 32, 8), unit: '%', warn: false, name: 'Load' },
-      '11': { value: jitter(base?.['11']?.value ?? 18, 6), unit: '%', warn: false, name: 'Throttle' },
-      '0F': { value: jitter(base?.['0F']?.value ?? 28, 2), unit: '°C', warn: false, name: 'IAT' },
-      '06': { value: jitter(base?.['06']?.value ?? 2.3, 3), unit: '%', warn: false, name: 'STFT B1' },
-      '07': { value: jitter(base?.['07']?.value ?? -1.5, 2), unit: '%', warn: false, name: 'LTFT B1' },
-      '10': { value: jitter(base?.['10']?.value ?? 8.4, 3), unit: 'g/s', warn: false, name: 'MAF' },
+
+    // Hardcoded base values for the original 10 PIDs
+    const DEFAULTS = {
+      '0C': 2200, '0D': 45, '05': 88, '0B': 101, '04': 32,
+      '11': 18, '0F': 28, '06': 2.3, '07': -1.5, '10': 8.4,
     };
+
+    const result = {};
+    const pids = pidsToGenerate || ALL_PIDS;
+    for (const pid of pids) {
+      const def = PIDS[pid];
+      if (!def) continue;
+      const defaultVal = DEFAULTS[pid] ?? ((def.min + def.max) / 2);
+      const baseVal = base?.[pid]?.value ?? defaultVal;
+      const range = Math.max(1, (def.max - def.min) * 0.05);
+      const value = jitter(baseVal, range);
+      const warn = def.warnAbove !== null && value > def.warnAbove;
+      result[pid] = { value, unit: def.unit, warn, name: def.name };
+    }
+    return result;
   }, []);
 
   const handleDemoMode = useCallback(() => {
@@ -505,7 +608,7 @@ export default function App() {
     setVehicles([demoVehicle]);
     setActiveVehicleId('v_demo');
     setBatteryVoltage(12.6);
-    setSupportedPIDs(new Set(['0C', '0D', '05', '0B', '04', '11', '0F', '06', '07', '10']));
+    setSupportedPIDs(new Set(getAllCatalogPIDs()));
 
     // Mock DTCs
     setStoredDTCs([
@@ -534,7 +637,7 @@ export default function App() {
     });
 
     // Start fake polling
-    const initialData = generateDemoData(null);
+    const initialData = generateDemoData(null, activePids);
     setLiveData(initialData);
     for (const [pid, data] of Object.entries(initialData)) {
       if (data?.value !== undefined) history.push(pid, data.value);
@@ -543,14 +646,14 @@ export default function App() {
 
     demoRef.current = setInterval(() => {
       setLiveData(prev => {
-        const next = generateDemoData(prev);
+        const next = generateDemoData(prev, activePidsRef.current);
         for (const [pid, data] of Object.entries(next)) {
           if (data?.value !== undefined) history.push(pid, data.value);
         }
         return next;
       });
     }, 600);
-  }, [generateDemoData, history]);
+  }, [generateDemoData, history, activePids]);
 
   const handleExitDemo = useCallback(() => {
     if (demoRef.current) {
@@ -644,11 +747,16 @@ export default function App() {
               connected={connected}
               connectionError={connectionError}
               selectedProfile={selectedProfile}
+              selectedProtocol={selectedProtocol}
+              customProfiles={customProfiles}
               adapterInfo={adapterInfo}
               onScan={handleScan}
               onConnect={handleConnect}
               onDisconnect={isDemo ? handleExitDemo : handleDisconnect}
               onProfileChange={setSelectedProfile}
+              onProtocolChange={handleProtocolChange}
+              onShowCustomProfile={() => setShowCustomProfile(true)}
+              onDeleteCustomProfile={handleDeleteCustomProfile}
               onDemoMode={handleDemoMode}
             />
           )}
@@ -660,6 +768,18 @@ export default function App() {
               history={history}
               onStartPolling={startPolling}
               onStopPolling={stopPolling}
+            />
+          )}
+          {view === VIEWS.CUSTOM && (
+            <CustomDashboardView
+              connected={connected}
+              liveData={liveData}
+              polling={polling}
+              history={history}
+              widgets={customWidgets.widgets}
+              onAddWidget={handleAddWidget}
+              onRemoveWidget={handleRemoveWidget}
+              onShowConfig={() => setShowWidgetConfig(true)}
             />
           )}
           {view === VIEWS.DIAGNOSTICS && (
@@ -689,6 +809,7 @@ export default function App() {
               activeVehicle={activeVehicle}
               onSelectVehicle={handleSelectVehicle}
               onShowAddVehicle={() => setShowAddVehicle(true)}
+              onAddCurrentVehicle={handleReadAndAddVehicle}
               onEditVehicle={handleEditVehicle}
               onDeleteVehicle={handleDeleteVehicle}
               onUpdateDtcStatus={handleUpdateDtcStatus}
@@ -746,7 +867,26 @@ export default function App() {
         {showAddVehicle && (
           <AddVehicleModal
             onAdd={handleAddVehicle}
-            onClose={() => setShowAddVehicle(false)}
+            onClose={() => { setShowAddVehicle(false); setAddVehicleVin(null); }}
+            prefillVin={addVehicleVin}
+          />
+        )}
+
+        {/* Widget Config Modal */}
+        {showWidgetConfig && (
+          <WidgetConfigModal
+            onAdd={handleAddWidget}
+            onClose={() => setShowWidgetConfig(false)}
+            existingPIDs={customWidgets.widgets.map(w => w.pid)}
+            supportedPIDs={supportedPIDs}
+          />
+        )}
+
+        {/* Custom Adapter Profile Modal */}
+        {showCustomProfile && (
+          <CustomProfileModal
+            onSave={handleSaveCustomProfile}
+            onClose={() => setShowCustomProfile(false)}
           />
         )}
       </div>
