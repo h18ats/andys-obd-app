@@ -257,6 +257,19 @@ export function NotConnected() {
   );
 }
 
+// --- NumberReadout (large numeric display) ---
+export function NumberReadout({ value, unit = '', label = '', warn = false }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
+      <span style={{ fontSize: '11px', color: COLORS.textDim, fontWeight: 600 }}>{label}</span>
+      <span style={{ fontSize: '32px', fontWeight: 700, color: warn ? COLORS.fault : COLORS.text, lineHeight: 1.1 }}>
+        {value !== null && value !== undefined ? Math.round(value * 10) / 10 : '—'}
+      </span>
+      <span style={{ fontSize: '11px', color: COLORS.textMuted }}>{unit}</span>
+    </div>
+  );
+}
+
 // --- SignalBars (BLE RSSI indicator) ---
 export function SignalBars({ rssi }) {
   const bars = rssi > -50 ? 4 : rssi > -60 ? 3 : rssi > -70 ? 2 : 1;

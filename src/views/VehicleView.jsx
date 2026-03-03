@@ -10,7 +10,7 @@ const SERVICE_TYPES = [
   'Air Filter', 'Spark Plugs', 'Coolant', 'Other',
 ];
 
-export default function VehicleView({ connected, vinData, batteryVoltage, supportedPIDs, adapterInfo, readingVehicle, onReadVehicle, vehicles, activeVehicle, onSelectVehicle, onShowAddVehicle, onEditVehicle, onDeleteVehicle, onUpdateDtcStatus, expiryWarnings, onAddService, onDeleteService }) {
+export default function VehicleView({ connected, vinData, batteryVoltage, supportedPIDs, adapterInfo, readingVehicle, onReadVehicle, vehicles, activeVehicle, onSelectVehicle, onShowAddVehicle, onAddCurrentVehicle, onEditVehicle, onDeleteVehicle, onUpdateDtcStatus, expiryWarnings, onAddService, onDeleteService }) {
   const [editingNickname, setEditingNickname] = useState(false);
   const [nicknameInput, setNicknameInput] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -147,6 +147,23 @@ export default function VehicleView({ connected, vinData, batteryVoltage, suppor
         >
           + Add
         </button>
+        {connected && (
+          <button
+            onClick={onAddCurrentVehicle}
+            disabled={readingVehicle}
+            style={{
+              padding: '6px 14px', borderRadius: '16px',
+              border: `1px solid ${COLORS.ok}60`,
+              background: `${COLORS.ok}15`, color: COLORS.ok,
+              fontSize: '12px', fontWeight: 600,
+              cursor: readingVehicle ? 'not-allowed' : 'pointer',
+              opacity: readingVehicle ? 0.5 : 1,
+              whiteSpace: 'nowrap', flexShrink: 0,
+            }}
+          >
+            {readingVehicle ? '⟳ Reading...' : '⚡ Add Current'}
+          </button>
+        )}
       </div>
 
       {/* Expiry warnings */}

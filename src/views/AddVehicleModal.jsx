@@ -29,8 +29,10 @@ async function lookupVRN(vrn) {
   };
 }
 
-export default function AddVehicleModal({ onAdd, onClose }) {
-  const [nickname, setNickname] = useState('');
+export default function AddVehicleModal({ onAdd, onClose, prefillVin }) {
+  const [nickname, setNickname] = useState(() =>
+    prefillVin?.model ? `MINI ${prefillVin.model}` : prefillVin ? 'My Vehicle' : ''
+  );
   const [vinInput, setVinInput] = useState('');
   const [vrnInput, setVrnInput] = useState('');
   const [vrnLooking, setVrnLooking] = useState(false);
@@ -63,7 +65,7 @@ export default function AddVehicleModal({ onAdd, onClose }) {
   const handleSubmit = () => {
     if (!nickname.trim()) return;
     const vrn = vrnInput.replace(/\s/g, '').toUpperCase() || null;
-    onAdd(nickname.trim(), vinInput.trim() || null, vrn, dvlaResult);
+    onAdd(nickname.trim(), prefillVin ? null : (vinInput.trim() || null), vrn, dvlaResult);
   };
 
   const inputStyle = {
@@ -91,8 +93,52 @@ export default function AddVehicleModal({ onAdd, onClose }) {
         }}
       >
         <h2 style={{ fontSize: '16px', fontWeight: 700, color: COLORS.text, margin: '0 0 16px' }}>
-          Add Vehicle
+          {prefillVin ? 'Add Current Vehicle' : 'Add Vehicle'}
         </h2>
+
+        {/* VIN Summary Card (prefill mode) */}
+        {prefillVin && (
+          <div style={{
+            background: '#0f172a', borderRadius: '10px',
+            border: `1px solid ${COLORS.accent}30`,
+            padding: '10px 12px', marginBottom: '12px',
+          }}>
+            <div style={{
+              padding: '8px', borderRadius: '6px', background: '#1e293b',
+              fontFamily: 'monospace', fontSize: '13px', fontWeight: 700,
+              color: COLORS.accent, textAlign: 'center', letterSpacing: '2px',
+              marginBottom: '8px',
+            }}>
+              {prefillVin.vin}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+              {prefillVin.model && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
+                  <span style={{ color: COLORS.textMuted }}>Model</span>
+                  <span style={{ color: COLORS.text, fontWeight: 600 }}>MINI {prefillVin.model}</span>
+                </div>
+              )}
+              {prefillVin.chassis && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
+                  <span style={{ color: COLORS.textMuted }}>Chassis</span>
+                  <span style={{ color: COLORS.text, fontWeight: 600 }}>{prefillVin.chassis}</span>
+                </div>
+              )}
+              {prefillVin.modelYear && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
+                  <span style={{ color: COLORS.textMuted }}>Year</span>
+                  <span style={{ color: COLORS.text, fontWeight: 600 }}>{prefillVin.modelYear}</span>
+                </div>
+              )}
+              {prefillVin.bodyType && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
+                  <span style={{ color: COLORS.textMuted }}>Body</span>
+                  <span style={{ color: COLORS.text, fontWeight: 600 }}>{prefillVin.bodyType}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* VRN Lookup */}
         <label style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, display: 'block', marginBottom: '6px' }}>
@@ -181,26 +227,30 @@ export default function AddVehicleModal({ onAdd, onClose }) {
           style={{ ...inputStyle, marginBottom: '12px' }}
         />
 
-        {/* VIN */}
-        <label style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, display: 'block', marginBottom: '6px' }}>
-          VIN (optional)
-        </label>
-        <input
-          type="text"
-          value={vinInput}
-          onChange={e => setVinInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-          placeholder="17-character VIN"
-          maxLength={17}
-          style={{
-            ...inputStyle,
-            fontFamily: 'monospace', letterSpacing: '1px',
-            marginBottom: '16px',
-          }}
-        />
-        <p style={{ fontSize: '11px', color: COLORS.textMuted, margin: '-12px 0 16px', lineHeight: 1.3 }}>
-          If provided, the VIN will be decoded to identify your vehicle. You can also read the VIN from the car later.
-        </p>
+        {/* VIN (hidden when prefilled from adapter) */}
+        {!prefillVin && (
+          <>
+            <label style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, display: 'block', marginBottom: '6px' }}>
+              VIN (optional)
+            </label>
+            <input
+              type="text"
+              value={vinInput}
+              onChange={e => setVinInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+              placeholder="17-character VIN"
+              maxLength={17}
+              style={{
+                ...inputStyle,
+                fontFamily: 'monospace', letterSpacing: '1px',
+                marginBottom: '16px',
+              }}
+            />
+            <p style={{ fontSize: '11px', color: COLORS.textMuted, margin: '-12px 0 16px', lineHeight: 1.3 }}>
+              If provided, the VIN will be decoded to identify your vehicle. You can also read the VIN from the car later.
+            </p>
+          </>
+        )}
 
         <div style={{ display: 'flex', gap: '8px' }}>
           <button
