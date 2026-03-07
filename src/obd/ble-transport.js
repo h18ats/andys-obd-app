@@ -9,7 +9,7 @@
  * the adapter is ready for the next command.
  */
 
-import { getScanServiceUUIDs, matchProfile } from './adapter-profiles.js';
+import { getScanServiceUUIDs, matchProfile, matchProfileByService, expandUUID, ADAPTER_PROFILES } from './adapter-profiles.js';
 
 let BleClient = null;
 let bleLoadError = null;
@@ -124,8 +124,10 @@ export async function connect(deviceId, deviceName, profile) {
     activeProfile = null;
   });
 
-  activeProfile = profile || matchProfile(deviceName);
   connectedDeviceId = deviceId;
+
+  // Discover actual GATT services on the device — don't rely on guessed profile
+  activeProfile = profile || await discoverProfile(deviceId, deviceName);
 
   // Start listening for notifications (adapter → app)
   await BleClient.startNotifications(
@@ -136,6 +138,71 @@ export async function connect(deviceId, deviceName, profile) {
   );
 
   return { deviceId, profile: activeProfile };
+}
+
+/**
+ * Discover the correct GATT profile by inspecting the device's actual services.
+ * Falls back to name-based matching if service discovery fails.
+ */
+async function discoverProfile(deviceId, deviceName) {
+  try {
+    const services = await BleClient.getServices(deviceId);
+
+    // Known service UUIDs from built-in profiles
+    const knownServiceUUIDs = new Set(
+      Object.values(ADAPTER_PROFILES).map(p => p.serviceUUID.toLowerCase())
+    );
+
+    // Try to find a matching known service first
+    for (const svc of services) {
+      const svcUUID = expandUUID(svc.uuid).toLowerCase();
+      if (knownServiceUUIDs.has(svcUUID)) {
+        const profile = matchProfileByService(svcUUID);
+        // Verify the characteristics actually exist on this service
+        const charUUIDs = new Set(svc.characteristics.map(c => expandUUID(c.uuid).toLowerCase()));
+        if (charUUIDs.has(profile.writeUUID.toLowerCase()) && charUUIDs.has(profile.notifyUUID.toLowerCase())) {
+          return profile;
+        }
+      }
+    }
+
+    // No known profile matched — find a service with write + notify characteristics
+    // This handles unknown/cheap adapters with non-standard UUIDs
+    for (const svc of services) {
+      const svcUUID = expandUUID(svc.uuid).toLowerCase();
+      // Skip standard BLE services (Generic Access, Generic Attribute, Device Info, Battery)
+      if (svcUUID.startsWith('00001800-') || svcUUID.startsWith('00001801-') ||
+          svcUUID.startsWith('0000180a-') || svcUUID.startsWith('0000180f-')) continue;
+
+      let writeChar = null;
+      let notifyChar = null;
+
+      for (const ch of svc.characteristics) {
+        const props = ch.properties;
+        if ((props.write || props.writeWithoutResponse) && !writeChar) {
+          writeChar = expandUUID(ch.uuid);
+        }
+        if ((props.notify || props.indicate) && !notifyChar) {
+          notifyChar = expandUUID(ch.uuid);
+        }
+      }
+
+      if (writeChar && notifyChar) {
+        return {
+          name: `Discovered (${deviceName || 'Unknown'})`,
+          serviceUUID: expandUUID(svc.uuid),
+          writeUUID: writeChar,
+          notifyUUID: notifyChar,
+          mtu: 20,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Service discovery failed, falling back to name match:', err);
+  }
+
+  // Last resort: guess from device name
+  return matchProfile(deviceName);
 }
 
 /**
