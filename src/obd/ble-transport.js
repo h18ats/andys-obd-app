@@ -293,7 +293,8 @@ export async function sendCommand(command, timeoutMs = 5000) {
  */
 function handleNotification(value) {
   if (!value || !value.buffer) return;
-  const bytes = new Uint8Array(value.buffer);
+  // Use byteOffset + byteLength to handle DataViews that are slices of a larger buffer
+  const bytes = new Uint8Array(value.buffer, value.byteOffset || 0, value.byteLength || value.buffer.byteLength);
 
   for (const byte of bytes) {
     responseBuffer.push(byte);

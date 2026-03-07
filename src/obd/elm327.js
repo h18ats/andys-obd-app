@@ -101,26 +101,36 @@ export async function sendSafeCommand(command, timeoutMs = 5000) {
  * @param {string} [protocolCode='6'] - ELM327 protocol code (0-9). '0' = auto-detect.
  * @returns {Promise<{ elmVersion: string, protocol: string }>}
  */
-export async function initAdapter(protocolCode = '6') {
-  // Reset
-  const resetResp = await sendSafeCommand('ATZ', 3000);
+export async function initAdapter(protocolCode = '0') {
+  // Wake-up poke — send a CR to flush any stale state
+  try { await enqueue('\r', 1000); } catch {}
+  await new Promise(r => setTimeout(r, 300));
+
+  // Reset — non-fatal, some adapters are slow or drop BLE briefly during reset
+  let version = 'Unknown';
+  try {
+    await enqueue('ATZ', 3000);
+    await new Promise(r => setTimeout(r, 1000)); // Wait for adapter to finish resetting
+  } catch {}
 
   // Identify
-  const version = await sendSafeCommand('ATI');
+  try {
+    version = await sendSafeCommand('ATI', 3000);
+  } catch {}
 
-  // Configure for clean OBD-II communication
-  await sendSafeCommand('ATE0');   // Echo off
-  await sendSafeCommand('ATL0');   // Linefeeds off
-  await sendSafeCommand('ATS0');   // Spaces off (we'll parse raw hex)
-  await sendSafeCommand('ATH0');   // Headers off
-  await sendSafeCommand(`ATSP${protocolCode}`);
-
-  // Re-enable spaces for easier parsing
-  await sendSafeCommand('ATS1');
+  // Configure for clean OBD-II communication — each non-fatal so init continues
+  for (const cmd of ['ATE0', 'ATL0', 'ATS0', 'ATH0', `ATSP${protocolCode}`, 'ATS1']) {
+    try { await sendSafeCommand(cmd, 3000); } catch (err) {
+      console.warn(`Init command ${cmd} failed:`, err.message);
+    }
+  }
 
   // Describe the detected protocol — auto-detect (ATSP0) needs longer timeout
-  const dpTimeout = protocolCode === '0' ? 10000 : 5000;
-  const protocol = await sendSafeCommand('ATDP', dpTimeout);
+  let protocol = 'Unknown';
+  try {
+    const dpTimeout = protocolCode === '0' ? 15000 : 5000;
+    protocol = await sendSafeCommand('ATDP', dpTimeout);
+  } catch {}
 
   return {
     elmVersion: version || 'Unknown',
