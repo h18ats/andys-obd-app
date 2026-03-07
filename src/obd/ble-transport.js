@@ -52,6 +52,10 @@ export async function initialiseBLE() {
 
 /**
  * Scan for nearby BLE OBD adapters.
+ * First tries filtered scan (by known service UUIDs). If that finds nothing,
+ * retries with no UUID filter — needed on Android where many cheap ELM327
+ * adapters don't advertise service UUIDs in their advertisement packets.
+ *
  * @param {(device: { deviceId, name, rssi }) => void} onDeviceFound - callback per discovered device
  * @param {number} [timeoutMs=10000] - scan duration
  * @returns {Promise<void>} resolves when scan completes
@@ -59,24 +63,36 @@ export async function initialiseBLE() {
 export async function scanForAdapters(onDeviceFound, timeoutMs = SCAN_TIMEOUT_MS) {
   await initialiseBLE();
 
-  return new Promise((resolve) => {
+  let foundCount = 0;
+  const wrappedCallback = (result) => {
+    foundCount++;
+    onDeviceFound({
+      deviceId: result.device.deviceId,
+      name: result.device.name || result.localName || 'Unknown OBD Adapter',
+      rssi: result.rssi,
+    });
+  };
+
+  // First pass: filtered by known service UUIDs
+  await runScan({ services: getScanServiceUUIDs(), allowDuplicates: false }, wrappedCallback, timeoutMs);
+
+  // If filtered scan found nothing, retry unfiltered (catches adapters that
+  // don't advertise service UUIDs in their advertisement packet — common on Android)
+  if (foundCount === 0) {
+    await runScan({ allowDuplicates: false }, wrappedCallback, timeoutMs);
+  }
+}
+
+async function runScan(scanOptions, onResult, timeoutMs) {
+  return new Promise((resolve, reject) => {
     const timer = setTimeout(async () => {
       try { await BleClient.stopLEScan(); } catch (_) {}
       resolve();
     }, timeoutMs);
 
-    BleClient.requestLEScan(
-      { services: getScanServiceUUIDs(), allowDuplicates: false },
-      (result) => {
-        onDeviceFound({
-          deviceId: result.device.deviceId,
-          name: result.device.name || result.localName || 'Unknown OBD Adapter',
-          rssi: result.rssi,
-        });
-      }
-    ).catch(() => {
+    BleClient.requestLEScan(scanOptions, onResult).catch((err) => {
       clearTimeout(timer);
-      resolve();
+      reject(err);
     });
   });
 }
