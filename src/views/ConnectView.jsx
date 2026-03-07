@@ -2,7 +2,7 @@ import React from 'react';
 import { Card, Badge, ActionButton, InfoRow, COLORS, SignalBars } from '../components/shared.jsx';
 import { ADAPTER_PROFILES, OBD_PROTOCOLS } from '../obd/adapter-profiles.js';
 
-export default function ConnectView({ scanning, devices, connecting, connected, connectionError, selectedProfile, selectedProtocol, customProfiles, adapterInfo, onScan, onConnect, onDisconnect, onProfileChange, onProtocolChange, onShowCustomProfile, onDeleteCustomProfile, onDemoMode }) {
+export default function ConnectView({ scanning, devices, connecting, connected, connectionError, connectStatus, selectedProfile, selectedProtocol, customProfiles, adapterInfo, onScan, onConnect, onDisconnect, onProfileChange, onProtocolChange, onShowCustomProfile, onDeleteCustomProfile, onDemoMode }) {
   const selectStyle = {
     width: '100%', padding: '10px 12px', borderRadius: '10px',
     background: '#1e293b', color: COLORS.text, border: `1px solid ${COLORS.bgCardBorder}`,
@@ -116,6 +116,17 @@ export default function ConnectView({ scanning, devices, connecting, connected, 
           onClick={onScan}
           disabled={scanning || connecting}
         />
+      )}
+
+      {/* Connection progress */}
+      {connecting && connectStatus && (
+        <Card style={{ borderColor: `${COLORS.accent}40` }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div style={{ width: '16px', height: '16px', border: `2px solid ${COLORS.accent}`, borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+            <p style={{ color: COLORS.accent, fontSize: '13px', margin: 0 }}>{connectStatus}</p>
+          </div>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </Card>
       )}
 
       {/* Connection error */}

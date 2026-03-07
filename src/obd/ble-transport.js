@@ -111,59 +111,60 @@ export async function stopScan() {
  * @param {object} [profile] - override adapter profile (otherwise auto-detected from name)
  * @returns {Promise<{ deviceId, profile }>}
  */
-const CONNECT_TIMEOUT_MS = 10000;
-const MAX_CONNECT_RETRIES = 2;
+const CONNECT_TIMEOUT_MS = 8000;
 
-export async function connect(deviceId, deviceName, profile) {
+export async function connect(deviceId, deviceName, profile, onProgress) {
   await initialiseBLE();
 
   if (connectedDeviceId) {
     await disconnect();
   }
 
-  // Clean up any stale GATT state from previous attempts
-  try { await BleClient.disconnect(deviceId); } catch {}
-  await new Promise(r => setTimeout(r, 300));
-
-  // Connect with timeout + retry — Android BLE is flaky
-  let lastError;
-  for (let attempt = 1; attempt <= MAX_CONNECT_RETRIES; attempt++) {
-    try {
-      await withTimeout(
-        BleClient.connect(deviceId, () => {
-          connectedDeviceId = null;
-          activeProfile = null;
-        }),
-        CONNECT_TIMEOUT_MS,
-        `Connection timed out (attempt ${attempt}/${MAX_CONNECT_RETRIES})`
-      );
-      lastError = null;
-      break;
-    } catch (err) {
-      lastError = err;
-      console.warn(`Connect attempt ${attempt} failed:`, err.message);
-      try { await BleClient.disconnect(deviceId); } catch {}
-      if (attempt < MAX_CONNECT_RETRIES) {
-        await new Promise(r => setTimeout(r, 1000));
-      }
-    }
+  // Connect with timeout
+  onProgress?.('Connecting...');
+  try {
+    await withTimeout(
+      BleClient.connect(deviceId, () => {
+        connectedDeviceId = null;
+        activeProfile = null;
+      }),
+      CONNECT_TIMEOUT_MS,
+      'Connection timed out. Make sure the adapter is powered on and close to your phone.'
+    );
+  } catch (err) {
+    // One retry after a brief pause
+    onProgress?.('Retrying...');
+    await new Promise(r => setTimeout(r, 1000));
+    await withTimeout(
+      BleClient.connect(deviceId, () => {
+        connectedDeviceId = null;
+        activeProfile = null;
+      }),
+      CONNECT_TIMEOUT_MS,
+      'Connection failed after retry. Try toggling Bluetooth off/on and scanning again.'
+    );
   }
-  if (lastError) throw lastError;
 
   connectedDeviceId = deviceId;
 
-  // Delay after connect — Android BLE stacks need time before service discovery
+  // Delay for Android BLE service discovery readiness
+  onProgress?.('Discovering services...');
   await new Promise(r => setTimeout(r, 800));
 
   // Discover actual GATT services on the device
   activeProfile = profile || await discoverProfile(deviceId, deviceName);
 
-  // Start listening for notifications (adapter → app)
-  await BleClient.startNotifications(
-    deviceId,
-    activeProfile.serviceUUID,
-    activeProfile.notifyUUID,
-    handleNotification
+  // Start listening for notifications
+  onProgress?.('Setting up communication...');
+  await withTimeout(
+    BleClient.startNotifications(
+      deviceId,
+      activeProfile.serviceUUID,
+      activeProfile.notifyUUID,
+      handleNotification
+    ),
+    5000,
+    'Failed to set up adapter communication. Try disconnecting and reconnecting.'
   );
 
   return { deviceId, profile: activeProfile };

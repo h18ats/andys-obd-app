@@ -214,13 +214,16 @@ export default function App() {
   }, []);
 
   // --- Connect to adapter ---
+  const [connectStatus, setConnectStatus] = useState(null);
   const handleConnect = useCallback(async (device) => {
     setConnecting(true);
     setConnectionError(null);
+    setConnectStatus('Connecting...');
     try {
       const profile = selectedProfile === 'auto' ? undefined : getAllProfiles()[selectedProfile];
-      await connect(device.deviceId, device.name, profile);
+      await connect(device.deviceId, device.name, profile, setConnectStatus);
 
+      setConnectStatus('Initialising adapter...');
       const info = await initAdapter(selectedProtocol);
       setAdapterInfo({ ...info, deviceName: device.name });
       setConnected(true);
@@ -230,6 +233,7 @@ export default function App() {
       try { await disconnect(); } catch {}
     }
     setConnecting(false);
+    setConnectStatus(null);
   }, [selectedProfile, selectedProtocol]);
 
   // --- Disconnect ---
@@ -758,6 +762,7 @@ export default function App() {
               connecting={connecting}
               connected={connected}
               connectionError={connectionError}
+              connectStatus={connectStatus}
               selectedProfile={selectedProfile}
               selectedProtocol={selectedProtocol}
               customProfiles={customProfiles}
