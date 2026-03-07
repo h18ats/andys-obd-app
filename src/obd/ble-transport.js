@@ -111,6 +111,9 @@ export async function stopScan() {
  * @param {object} [profile] - override adapter profile (otherwise auto-detected from name)
  * @returns {Promise<{ deviceId, profile }>}
  */
+const CONNECT_TIMEOUT_MS = 10000;
+const MAX_CONNECT_RETRIES = 2;
+
 export async function connect(deviceId, deviceName, profile) {
   await initialiseBLE();
 
@@ -118,18 +121,41 @@ export async function connect(deviceId, deviceName, profile) {
     await disconnect();
   }
 
-  await BleClient.connect(deviceId, () => {
-    // Disconnection callback
-    connectedDeviceId = null;
-    activeProfile = null;
-  });
+  // Clean up any stale GATT state from previous attempts
+  try { await BleClient.disconnect(deviceId); } catch {}
+  await new Promise(r => setTimeout(r, 300));
+
+  // Connect with timeout + retry — Android BLE is flaky
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_CONNECT_RETRIES; attempt++) {
+    try {
+      await withTimeout(
+        BleClient.connect(deviceId, () => {
+          connectedDeviceId = null;
+          activeProfile = null;
+        }),
+        CONNECT_TIMEOUT_MS,
+        `Connection timed out (attempt ${attempt}/${MAX_CONNECT_RETRIES})`
+      );
+      lastError = null;
+      break;
+    } catch (err) {
+      lastError = err;
+      console.warn(`Connect attempt ${attempt} failed:`, err.message);
+      try { await BleClient.disconnect(deviceId); } catch {}
+      if (attempt < MAX_CONNECT_RETRIES) {
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+  }
+  if (lastError) throw lastError;
 
   connectedDeviceId = deviceId;
 
-  // Small delay after connect — some Android BLE stacks need time before service discovery
-  await new Promise(r => setTimeout(r, 500));
+  // Delay after connect — Android BLE stacks need time before service discovery
+  await new Promise(r => setTimeout(r, 800));
 
-  // Discover actual GATT services on the device — don't rely on guessed profile
+  // Discover actual GATT services on the device
   activeProfile = profile || await discoverProfile(deviceId, deviceName);
 
   // Start listening for notifications (adapter → app)
@@ -141,6 +167,16 @@ export async function connect(deviceId, deviceName, profile) {
   );
 
   return { deviceId, profile: activeProfile };
+}
+
+function withTimeout(promise, ms, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
 }
 
 /**
