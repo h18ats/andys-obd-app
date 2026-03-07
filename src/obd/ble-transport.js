@@ -126,6 +126,9 @@ export async function connect(deviceId, deviceName, profile) {
 
   connectedDeviceId = deviceId;
 
+  // Small delay after connect — some Android BLE stacks need time before service discovery
+  await new Promise(r => setTimeout(r, 500));
+
   // Discover actual GATT services on the device — don't rely on guessed profile
   activeProfile = profile || await discoverProfile(deviceId, deviceName);
 
@@ -142,37 +145,20 @@ export async function connect(deviceId, deviceName, profile) {
 
 /**
  * Discover the correct GATT profile by inspecting the device's actual services.
+ * Uses exact UUIDs from the device's GATT table — no expansion or transformation.
+ * Android BLE stack requires UUIDs to match exactly what getServices() returns.
  * Falls back to name-based matching if service discovery fails.
  */
 async function discoverProfile(deviceId, deviceName) {
   try {
     const services = await BleClient.getServices(deviceId);
 
-    // Known service UUIDs from built-in profiles
-    const knownServiceUUIDs = new Set(
-      Object.values(ADAPTER_PROFILES).map(p => p.serviceUUID.toLowerCase())
-    );
+    // Standard BLE service UUID prefixes to skip
+    const SKIP = ['00001800', '00001801', '0000180a', '0000180f'];
 
-    // Try to find a matching known service first
     for (const svc of services) {
-      const svcUUID = expandUUID(svc.uuid).toLowerCase();
-      if (knownServiceUUIDs.has(svcUUID)) {
-        const profile = matchProfileByService(svcUUID);
-        // Verify the characteristics actually exist on this service
-        const charUUIDs = new Set(svc.characteristics.map(c => expandUUID(c.uuid).toLowerCase()));
-        if (charUUIDs.has(profile.writeUUID.toLowerCase()) && charUUIDs.has(profile.notifyUUID.toLowerCase())) {
-          return profile;
-        }
-      }
-    }
-
-    // No known profile matched — find a service with write + notify characteristics
-    // This handles unknown/cheap adapters with non-standard UUIDs
-    for (const svc of services) {
-      const svcUUID = expandUUID(svc.uuid).toLowerCase();
-      // Skip standard BLE services (Generic Access, Generic Attribute, Device Info, Battery)
-      if (svcUUID.startsWith('00001800-') || svcUUID.startsWith('00001801-') ||
-          svcUUID.startsWith('0000180a-') || svcUUID.startsWith('0000180f-')) continue;
+      const svcLower = svc.uuid.toLowerCase();
+      if (SKIP.some(prefix => svcLower.startsWith(prefix))) continue;
 
       let writeChar = null;
       let writeType = 'write';
@@ -180,24 +166,25 @@ async function discoverProfile(deviceId, deviceName) {
 
       for (const ch of svc.characteristics) {
         const props = ch.properties;
+        // Prefer writeWithoutResponse (most cheap ELM327 adapters need it)
         if (!writeChar) {
           if (props.writeWithoutResponse) {
-            writeChar = expandUUID(ch.uuid);
+            writeChar = ch.uuid;
             writeType = 'writeWithoutResponse';
           } else if (props.write) {
-            writeChar = expandUUID(ch.uuid);
+            writeChar = ch.uuid;
             writeType = 'write';
           }
         }
         if ((props.notify || props.indicate) && !notifyChar) {
-          notifyChar = expandUUID(ch.uuid);
+          notifyChar = ch.uuid;
         }
       }
 
       if (writeChar && notifyChar) {
         return {
           name: `Discovered (${deviceName || 'Unknown'})`,
-          serviceUUID: expandUUID(svc.uuid),
+          serviceUUID: svc.uuid,
           writeUUID: writeChar,
           notifyUUID: notifyChar,
           writeType,

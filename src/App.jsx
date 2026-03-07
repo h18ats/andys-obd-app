@@ -120,7 +120,7 @@ export default function App() {
   const [adapterInfo, setAdapterInfo] = useState(null);
   const [connectionError, setConnectionError] = useState(null);
   const [selectedProfile, setSelectedProfile] = useState('auto');
-  const [selectedProtocol, setSelectedProtocol] = useState(() => loadState('protocol', '6'));
+  const [selectedProtocol, setSelectedProtocol] = useState(() => loadState('protocol', '0'));
   const [customProfiles, setCustomProfiles] = useState(() => loadCustomProfiles());
   const [showCustomProfile, setShowCustomProfile] = useState(false);
 
