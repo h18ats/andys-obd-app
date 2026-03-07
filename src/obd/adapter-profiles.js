@@ -29,9 +29,9 @@ export const ADAPTER_PROFILES = {
   },
   obdlink: {
     name: 'OBDLink CX',
-    serviceUUID: 'fff0',
-    writeUUID: 'fff1',
-    notifyUUID: 'fff2',
+    serviceUUID: '0000fff0-0000-1000-8000-00805f9b34fb',
+    writeUUID: '0000fff1-0000-1000-8000-00805f9b34fb',
+    notifyUUID: '0000fff2-0000-1000-8000-00805f9b34fb',
     mtu: 512,
   },
   veepeak: {
@@ -49,6 +49,17 @@ export const ADAPTER_PROFILES = {
     mtu: 20,
   },
 };
+
+/**
+ * Expand a short (16-bit) BLE UUID to full 128-bit format.
+ * Android requires 128-bit; iOS auto-expands but 128-bit works on both.
+ */
+export function expandUUID(uuid) {
+  if (!uuid) return uuid;
+  const s = uuid.toLowerCase().replace(/^0x/, '');
+  if (/^[0-9a-f]{4}$/.test(s)) return `0000${s}-0000-1000-8000-00805f9b34fb`;
+  return s;
+}
 
 /** All service UUIDs to scan for during BLE discovery. */
 export const SCAN_SERVICE_UUIDS = [
@@ -111,16 +122,21 @@ export function deleteCustomProfile(id) {
 export function getAllProfiles() {
   const all = { ...ADAPTER_PROFILES };
   for (const cp of loadCustomProfiles()) {
-    all[cp.id] = cp;
+    all[cp.id] = {
+      ...cp,
+      serviceUUID: expandUUID(cp.serviceUUID),
+      writeUUID: expandUUID(cp.writeUUID),
+      notifyUUID: expandUUID(cp.notifyUUID),
+    };
   }
   return all;
 }
 
-/** Dynamic scan UUIDs — includes custom profile service UUIDs. */
+/** Dynamic scan UUIDs — includes custom profile service UUIDs. All expanded to 128-bit. */
 export function getScanServiceUUIDs() {
-  const uuids = new Set(Object.values(ADAPTER_PROFILES).map(p => p.serviceUUID));
+  const uuids = new Set(Object.values(ADAPTER_PROFILES).map(p => expandUUID(p.serviceUUID)));
   for (const cp of loadCustomProfiles()) {
-    uuids.add(cp.serviceUUID);
+    uuids.add(expandUUID(cp.serviceUUID));
   }
   return [...uuids];
 }
