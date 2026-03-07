@@ -99,7 +99,9 @@ function loadState(key, fallback) {
   } catch { return fallback; }
 }
 function saveState(key, value) {
-  try { localStorage.setItem(`obd_${key}`, JSON.stringify(value)); } catch {}
+  try { localStorage.setItem(`obd_${key}`, JSON.stringify(value)); } catch (e) {
+    console.warn(`Failed to save obd_${key}:`, e);
+  }
 }
 
 // ==================== APP ====================
@@ -249,15 +251,24 @@ export default function App() {
     pollingRef.current = true;
     setPolling(true);
 
+    let consecutiveFailures = 0;
     while (pollingRef.current && isConnected()) {
       try {
         const results = await queryPIDs(activePidsRef.current);
         setLiveData(results);
+        consecutiveFailures = 0;
         for (const [pid, data] of Object.entries(results)) {
           if (data?.value !== undefined) history.push(pid, data.value);
         }
       } catch (err) {
-        console.warn('Poll error:', err.message);
+        consecutiveFailures++;
+        console.warn(`Poll error (${consecutiveFailures}/3):`, err.message);
+        // Heartbeat: if 3+ consecutive failures, adapter is likely gone
+        if (consecutiveFailures >= 3) {
+          console.warn('Adapter unresponsive — forcing disconnect');
+          try { await disconnect(); } catch {}
+          break;
+        }
       }
       // ~500ms between polls
       await new Promise((r) => setTimeout(r, 500));
@@ -267,6 +278,7 @@ export default function App() {
     if (!isConnected()) {
       setConnected(false);
       setAdapterInfo(null);
+      setConnectionError('Adapter disconnected');
     }
 
     setPolling(false);

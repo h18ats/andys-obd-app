@@ -122,10 +122,6 @@ const GENERIC_DTCS = {
   P0601: { desc: 'Internal control module memory check sum error', severity: SEVERITY.CRITICAL },
   P0602: { desc: 'Control module programming error', severity: SEVERITY.CRITICAL },
 
-  // Catalytic converter monitoring
-  P0420: { desc: 'Catalyst system efficiency below threshold (B1)', severity: SEVERITY.WARNING },
-  P0430: { desc: 'Catalyst system efficiency below threshold (B2)', severity: SEVERITY.WARNING },
-
   // Additional common codes
   P0010: { desc: 'Intake camshaft position actuator circuit (Bank 1)', severity: SEVERITY.WARNING },
   P0011: { desc: 'Intake camshaft position timing over-advanced (B1)', severity: SEVERITY.WARNING },

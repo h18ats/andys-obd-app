@@ -175,12 +175,19 @@ async function discoverProfile(deviceId, deviceName) {
           svcUUID.startsWith('0000180a-') || svcUUID.startsWith('0000180f-')) continue;
 
       let writeChar = null;
+      let writeType = 'write';
       let notifyChar = null;
 
       for (const ch of svc.characteristics) {
         const props = ch.properties;
-        if ((props.write || props.writeWithoutResponse) && !writeChar) {
-          writeChar = expandUUID(ch.uuid);
+        if (!writeChar) {
+          if (props.writeWithoutResponse) {
+            writeChar = expandUUID(ch.uuid);
+            writeType = 'writeWithoutResponse';
+          } else if (props.write) {
+            writeChar = expandUUID(ch.uuid);
+            writeType = 'write';
+          }
         }
         if ((props.notify || props.indicate) && !notifyChar) {
           notifyChar = expandUUID(ch.uuid);
@@ -193,6 +200,7 @@ async function discoverProfile(deviceId, deviceName) {
           serviceUUID: expandUUID(svc.uuid),
           writeUUID: writeChar,
           notifyUUID: notifyChar,
+          writeType,
           mtu: 20,
         };
       }
@@ -255,20 +263,30 @@ export async function sendCommand(command, timeoutMs = 5000) {
   // Encode command + carriage return
   const cmdStr = command.trim() + '\r';
   const bytes = new TextEncoder().encode(cmdStr);
-  const dataView = new DataView(bytes.buffer);
 
   // Chunk writes to respect MTU
   const mtu = activeProfile.mtu || 20;
+  const useWriteWithoutResponse = activeProfile.writeType === 'writeWithoutResponse';
+
   for (let offset = 0; offset < bytes.length; offset += mtu) {
     const chunkLength = Math.min(mtu, bytes.length - offset);
     const chunk = new DataView(bytes.buffer, offset, chunkLength);
 
-    await BleClient.write(
-      connectedDeviceId,
-      activeProfile.serviceUUID,
-      activeProfile.writeUUID,
-      chunk
-    );
+    if (useWriteWithoutResponse) {
+      await BleClient.writeWithoutResponse(
+        connectedDeviceId,
+        activeProfile.serviceUUID,
+        activeProfile.writeUUID,
+        chunk
+      );
+    } else {
+      await BleClient.write(
+        connectedDeviceId,
+        activeProfile.serviceUUID,
+        activeProfile.writeUUID,
+        chunk
+      );
+    }
   }
 
   // Wait for response (notifications accumulate into responseBuffer)
@@ -287,6 +305,7 @@ export async function sendCommand(command, timeoutMs = 5000) {
  * Handle a BLE notification (data fragment from adapter).
  */
 function handleNotification(value) {
+  if (!value || !value.buffer) return;
   const bytes = new Uint8Array(value.buffer);
 
   for (const byte of bytes) {

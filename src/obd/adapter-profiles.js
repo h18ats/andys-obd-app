@@ -61,10 +61,6 @@ export function expandUUID(uuid) {
   return s;
 }
 
-/** All service UUIDs to scan for during BLE discovery. */
-export const SCAN_SERVICE_UUIDS = [
-  ...new Set(Object.values(ADAPTER_PROFILES).map((p) => p.serviceUUID)),
-];
 
 /**
  * Match a discovered BLE device to an adapter profile by name heuristics.
