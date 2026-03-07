@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Pulse, ErrorBoundary, COLORS, Badge } from './components/shared.jsx';
 import { scanForAdapters, connect, disconnect, isConnected } from './obd/ble-transport.js';
-import { initAdapter, queryPIDs, readStoredDTCs, readPendingDTCs, readPermanentDTCs, readVIN, readBatteryVoltage, querySupportedPIDs, readMonitorStatus, clearQueue } from './obd/elm327.js';
+import { initAdapter, queryPIDs, readStoredDTCs, readPendingDTCs, readPermanentDTCs, readVIN, readBatteryVoltage, querySupportedPIDs, readMonitorStatus, readCVMDTCs, clearQueue } from './obd/elm327.js';
 import { ALL_PIDS, PIDS } from './obd/obd-pids.js';
 import { ADAPTER_PROFILES, getAllProfiles, loadCustomProfiles, saveCustomProfile, deleteCustomProfile } from './obd/adapter-profiles.js';
 import { decodeVIN } from './obd/vin-decoder.js';
@@ -136,6 +136,12 @@ export default function App() {
   const [permanentDTCs, setPermanentDTCs] = useState([]);
   const [readingDTCs, setReadingDTCs] = useState(false);
   const [monitorStatus, setMonitorStatus] = useState(null);
+
+  // CVM roof scan
+  const [cvmDTCs, setCvmDTCs] = useState(() => loadState('cvmDTCs', []));
+  const [readingCVM, setReadingCVM] = useState(false);
+  const [cvmScanAttempted, setCvmScanAttempted] = useState(() => loadState('cvmScanAttempted', false));
+  const [cvmReachable, setCvmReachable] = useState(() => loadState('cvmReachable', true));
 
   // Vehicle management
   const [vehicles, setVehicles] = useState(() => {
@@ -351,6 +357,27 @@ export default function App() {
     }
     setReadingDTCs(false);
   }, [activeVehicle?.id]);
+
+  // --- Scan CVM roof module ---
+  const handleScanCVM = useCallback(async () => {
+    setReadingCVM(true);
+    try {
+      const result = await readCVMDTCs();
+      setCvmDTCs(result.dtcs);
+      setCvmScanAttempted(true);
+      setCvmReachable(result.reachable);
+      saveState('cvmDTCs', result.dtcs);
+      saveState('cvmScanAttempted', true);
+      saveState('cvmReachable', result.reachable);
+    } catch (err) {
+      console.warn('CVM scan error:', err.message);
+      setCvmScanAttempted(true);
+      setCvmReachable(false);
+      saveState('cvmScanAttempted', true);
+      saveState('cvmReachable', false);
+    }
+    setReadingCVM(false);
+  }, []);
 
   // --- Read vehicle info ---
   const handleReadVehicle = useCallback(async () => {
@@ -685,6 +712,9 @@ export default function App() {
     setPendingDTCs([]);
     setPermanentDTCs([]);
     setMonitorStatus(null);
+    setCvmDTCs([]);
+    setCvmScanAttempted(false);
+    setCvmReachable(true);
     setVehicles([]);
     setActiveVehicleId(null);
     setBatteryVoltage(null);
@@ -811,7 +841,15 @@ export default function App() {
             />
           )}
           {view === VIEWS.ROOF && (
-            <RoofView vinData={vinData} />
+            <RoofView
+              vinData={vinData}
+              connected={connected}
+              cvmDTCs={cvmDTCs}
+              readingCVM={readingCVM}
+              cvmScanAttempted={cvmScanAttempted}
+              cvmReachable={cvmReachable}
+              onScanCVM={handleScanCVM}
+            />
           )}
           {view === VIEWS.VEHICLE && (
             <VehicleView

@@ -11,6 +11,7 @@ import { validateCommand } from './command-safety.js';
 import { sendCommand, isConnected, disconnect } from './ble-transport.js';
 import { decodePID, parseResponseBytes, PIDS } from './obd-pids.js';
 import { parseDTCResponse } from './dtc-database.js';
+import { parseCVMResponse } from './roof-codes.js';
 import { parseVINResponse, decodeVIN } from './vin-decoder.js';
 
 // --- Command queue (serial, one-at-a-time) ---
@@ -325,6 +326,56 @@ export async function readMonitorStatus() {
     console.warn('Failed to read monitor status:', err.message);
     return null;
   }
+}
+
+/**
+ * Read CVM (Convertible Top Module) DTCs via UDS protocol.
+ *
+ * Switches ELM327 headers to address the CVM module (tx 0x660 / rx 0x6E0),
+ * sends a UDS ReadDTCInformation request (19 02 FF), then restores normal
+ * OBD-II mode. All commands go through the safety gate — no bypass.
+ *
+ * @returns {Promise<{ dtcs: Array, reachable: boolean, raw: string }>}
+ */
+export async function readCVMDTCs() {
+  const result = { dtcs: [], reachable: false, raw: '' };
+
+  try {
+    // 1. Enable headers so we can see response addresses
+    await sendSafeCommand('ATH1', 3000);
+
+    // 2. Set transmit address to CVM module
+    await sendSafeCommand('ATSH 660', 3000);
+
+    // 3. Filter responses to CVM only
+    await sendSafeCommand('ATCRA 6E0', 3000);
+
+    // 4. Send UDS ReadDTCInformation — status mask 0xFF (all stored DTCs)
+    let response;
+    try {
+      response = await enqueue('19 02 FF', 8000);
+    } catch (err) {
+      // NO DATA or CAN ERROR means CVM not reachable — not a failure
+      console.warn('CVM scan: module not reachable:', err.message);
+      return result; // reachable stays false
+    }
+
+    // If we got here, module responded
+    if (response && !isELMError(response)) {
+      result.reachable = true;
+      const parsed = parseCVMResponse(response);
+      result.dtcs = parsed.dtcs;
+      result.raw = parsed.raw;
+    }
+  } finally {
+    // 5. ALWAYS restore normal OBD-II mode, even if scan failed
+    try { await sendSafeCommand('ATH0', 3000); } catch {}
+    try { await sendSafeCommand('ATAR', 3000); } catch {}
+    try { await sendSafeCommand('ATD', 3000); } catch {}
+    try { await sendSafeCommand('ATSP0', 5000); } catch {}
+  }
+
+  return result;
 }
 
 /**

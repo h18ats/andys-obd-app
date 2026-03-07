@@ -255,3 +255,66 @@ export function lookupCCID(ccid) {
 export function getRoofDatabaseSize() {
   return Object.keys(ROOF_CODES).length + Object.keys(ROOF_CCID_CODES).length;
 }
+
+/**
+ * Parse a raw UDS CVM response into structured DTC objects.
+ *
+ * UDS ReadDTCInformation (19 02 FF) response format:
+ *   59 02 FF [DTC_HI] [DTC_LO] [SUB] [STATUS] ...
+ * Each DTC is 4 bytes. First 2 bytes = BMW hex code (e.g. A6 92 → "A692").
+ *
+ * @param {string} responseStr - Raw ELM327 response (hex bytes, space-separated)
+ * @returns {{ dtcs: Array<{ code, desc, severity, cause, fix, component }>, raw: string }}
+ */
+export function parseCVMResponse(responseStr) {
+  if (!responseStr || typeof responseStr !== 'string') {
+    return { dtcs: [], raw: responseStr || '' };
+  }
+
+  // Strip any line breaks, prompt chars, and normalise spacing
+  const cleaned = responseStr.replace(/[\r\n>]/g, ' ').trim();
+  const bytes = cleaned.split(/\s+/).filter(b => /^[0-9A-Fa-f]{2}$/.test(b));
+
+  // Find the 59 02 FF prefix (positive response to 19 02 FF)
+  let startIdx = -1;
+  for (let i = 0; i <= bytes.length - 3; i++) {
+    if (bytes[i].toUpperCase() === '59' &&
+        bytes[i + 1].toUpperCase() === '02' &&
+        bytes[i + 2].toUpperCase() === 'FF') {
+      startIdx = i + 3;
+      break;
+    }
+  }
+
+  if (startIdx < 0 || startIdx >= bytes.length) {
+    return { dtcs: [], raw: cleaned };
+  }
+
+  // Each DTC is 4 bytes: [HI] [LO] [SUB] [STATUS]
+  const dtcBytes = bytes.slice(startIdx);
+  const dtcs = [];
+
+  for (let i = 0; i + 3 < dtcBytes.length; i += 4) {
+    const hi = dtcBytes[i].toUpperCase();
+    const lo = dtcBytes[i + 1].toUpperCase();
+    const code = `${hi}${lo}`;
+    const statusByte = parseInt(dtcBytes[i + 3], 16);
+
+    // Skip null DTCs (00 00)
+    if (code === '0000') continue;
+
+    const known = ROOF_CODES[code];
+    dtcs.push({
+      code,
+      desc: known?.desc || 'Unknown CVM fault',
+      severity: known?.severity || ROOF_SEVERITY.WARNING,
+      cause: known?.cause || null,
+      fix: known?.fix || null,
+      component: known?.component || 'CVM',
+      statusByte,
+      active: (statusByte & 0x01) !== 0,
+    });
+  }
+
+  return { dtcs, raw: cleaned };
+}

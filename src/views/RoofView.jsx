@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Card, Badge, InfoRow, COLORS } from '../components/shared.jsx';
 import { ROOF_CODES, ROOF_CCID_CODES, ROOF_FAILURE_POINTS, lookupRoofCode, lookupCCID } from '../obd/roof-codes.js';
 
-export default function RoofView({ vinData }) {
+export default function RoofView({ vinData, connected, cvmDTCs, readingCVM, cvmScanAttempted, cvmReachable, onScanCVM }) {
   const [searchCode, setSearchCode] = useState('');
   const [searchResult, setSearchResult] = useState(null);
   const [activeSection, setActiveSection] = useState('lookup'); // lookup | failures | ccid
@@ -11,14 +11,12 @@ export default function RoofView({ vinData }) {
     const code = searchCode.trim().toUpperCase();
     if (!code) return;
 
-    // Try CVM hex code first
     const roofResult = lookupRoofCode(code);
     if (roofResult) {
       setSearchResult({ type: 'roof', code, ...roofResult });
       return;
     }
 
-    // Try CC-ID
     const ccidResult = lookupCCID(code);
     if (ccidResult) {
       setSearchResult({ type: 'ccid', code, ...ccidResult });
@@ -30,6 +28,7 @@ export default function RoofView({ vinData }) {
 
   const isR57 = vinData?.isR57;
   const severityColor = { info: COLORS.accent, warning: COLORS.warn, critical: COLORS.fault };
+  const hasFaults = cvmDTCs && cvmDTCs.length > 0;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', paddingTop: '8px' }}>
@@ -53,22 +52,111 @@ export default function RoofView({ vinData }) {
         </div>
       </Card>
 
-      {/* Important notice */}
-      <Card style={{ borderColor: `${COLORS.warn}30` }}>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-          <span style={{ fontSize: '16px', flexShrink: 0 }}>⚠️</span>
+      {/* Scan button */}
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
-            <div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.warn, marginBottom: '4px' }}>
-              BMW-Specific Codes
-            </div>
-            <div style={{ fontSize: '11px', color: COLORS.textDim, lineHeight: 1.4 }}>
-              Roof fault codes (A68x–A6Ax) are stored in the CVM module on the body CAN bus,
-              not accessible via standard OBD-II. Use this as a lookup reference for codes
-              from BimmerLink, Carly, or ISTA.
+            <div style={{ fontSize: '13px', fontWeight: 600, color: COLORS.text }}>CVM Active Scan</div>
+            <div style={{ fontSize: '11px', color: COLORS.textDim, marginTop: '2px' }}>
+              Read fault codes directly from the roof module
             </div>
           </div>
+          <button
+            onClick={onScanCVM}
+            disabled={!connected || readingCVM}
+            style={{
+              padding: '10px 18px', borderRadius: '10px', border: 'none',
+              background: readingCVM ? `${COLORS.accent}40` : connected ? COLORS.accent : '#334155',
+              color: '#fff', fontSize: '13px', fontWeight: 600, cursor: connected && !readingCVM ? 'pointer' : 'default',
+              opacity: connected ? 1 : 0.5, transition: 'all 0.2s',
+            }}
+          >
+            {readingCVM ? 'Scanning...' : cvmScanAttempted ? 'Scan Again' : 'Scan Roof Module'}
+          </button>
         </div>
+        {!connected && (
+          <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '8px' }}>
+            Connect to your OBD adapter first.
+          </div>
+        )}
       </Card>
+
+      {/* Scan result summary */}
+      {cvmScanAttempted && !readingCVM && cvmReachable && (
+        <Card style={{ borderColor: hasFaults ? `${COLORS.fault}40` : `${COLORS.ok}40` }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span style={{ fontSize: '24px' }}>{hasFaults ? '🔴' : '🟢'}</span>
+            <div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: hasFaults ? COLORS.fault : COLORS.ok }}>
+                {hasFaults ? `${cvmDTCs.length} Roof Fault${cvmDTCs.length > 1 ? 's' : ''} Found` : 'No Roof Faults'}
+              </div>
+              <div style={{ fontSize: '11px', color: COLORS.textDim, marginTop: '2px' }}>
+                {hasFaults ? 'Active faults detected in CVM module' : 'CVM module reports no stored fault codes'}
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* CVM not reachable notice */}
+      {cvmScanAttempted && !readingCVM && !cvmReachable && (
+        <Card style={{ borderColor: `${COLORS.warn}30` }}>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+            <span style={{ fontSize: '16px', flexShrink: 0 }}>⚠️</span>
+            <div>
+              <div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.warn, marginBottom: '4px' }}>
+                CVM Module Not Reachable
+              </div>
+              <div style={{ fontSize: '11px', color: COLORS.textDim, lineHeight: 1.4, marginBottom: '8px' }}>
+                Your adapter responded but the CVM roof module did not. This is common with
+                basic ELM327 adapters that only support standard OBD-II and cannot address
+                body-bus modules. The reference lookup below is still fully functional.
+              </div>
+              <div style={{ fontSize: '11px', color: COLORS.textDim, lineHeight: 1.4 }}>
+                For direct CVM scanning, try BimmerLink, Carly for BMW, or a DCAN cable with ISTA.
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Active scan results — each fault as a card */}
+      {cvmScanAttempted && !readingCVM && cvmReachable && hasFaults && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {cvmDTCs.map((dtc, i) => (
+            <Card key={i} style={{ borderColor: `${severityColor[dtc.severity] || COLORS.accent}40` }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '16px', fontWeight: 700, fontFamily: 'monospace', color: COLORS.text }}>
+                    {dtc.code}
+                  </span>
+                  {dtc.active && (
+                    <span style={{
+                      padding: '2px 6px', borderRadius: '4px', fontSize: '9px', fontWeight: 700,
+                      background: `${COLORS.fault}20`, color: COLORS.fault, textTransform: 'uppercase',
+                    }}>Active</span>
+                  )}
+                </div>
+                <Badge
+                  label={dtc.severity}
+                  variant={dtc.severity === 'critical' ? 'fault' : dtc.severity === 'warning' ? 'warn' : 'info'}
+                />
+              </div>
+              <p style={{ fontSize: '13px', color: COLORS.text, margin: '0 0 6px', fontWeight: 500 }}>
+                {dtc.desc}
+              </p>
+              {dtc.component && <InfoRow label="Component" value={dtc.component} />}
+              {dtc.cause && <InfoRow label="Cause" value={dtc.cause} />}
+              {dtc.fix && (
+                <div style={{ marginTop: '6px', padding: '8px 10px', borderRadius: '8px', background: `${COLORS.ok}10` }}>
+                  <span style={{ fontSize: '11px', color: COLORS.ok, fontWeight: 600 }}>Fix: </span>
+                  <span style={{ fontSize: '11px', color: COLORS.textDim }}>{dtc.fix}</span>
+                </div>
+              )}
+            </Card>
+          ))}
+        </div>
+      )}
 
       {/* Section tabs */}
       <div style={{ display: 'flex', gap: '6px' }}>
@@ -269,7 +357,10 @@ export default function RoofView({ vinData }) {
       {/* Tools recommendation */}
       <Card>
         <p style={{ fontSize: '12px', color: COLORS.textDim, fontWeight: 600, marginBottom: '8px' }}>
-          Tools for Reading CVM Codes
+          Alternative Tools for CVM Codes
+        </p>
+        <p style={{ fontSize: '11px', color: COLORS.textMuted, marginBottom: '8px', lineHeight: 1.3 }}>
+          This app attempts a direct CVM scan via UDS. If your adapter doesn't support body-bus access, these dedicated tools will:
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
           <InfoRow label="BimmerLink" value="App — reads all ECU modules" />

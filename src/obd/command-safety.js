@@ -16,6 +16,7 @@ const ALLOWED_MODES = new Set([
   '07', // Show pending DTCs
   '09', // Request vehicle information (VIN, calibration IDs)
   '0A', // Show permanent DTCs
+  '19', // UDS ReadDTCInformation (read-only diagnostic query)
 ]);
 
 // --- Whitelist: only these AT command prefixes are allowed ---
@@ -34,6 +35,9 @@ const ALLOWED_AT_PREFIXES = [
   'ATD',   // Set defaults
   'ATWS',  // Warm start
   'AT@1',  // Device description
+  'ATSH',  // Set CAN header (tx address) — read-only, routes commands
+  'ATCRA', // Set CAN receive address filter — read-only, filters responses
+  'ATAR',  // Auto-set receive address — restores normal rx filtering
 ];
 
 // --- Blocklist: these are ALWAYS rejected, even if they somehow pass the whitelist ---
