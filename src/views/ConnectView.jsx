@@ -185,6 +185,34 @@ export default function ConnectView({ scanning, devices, connecting, connected, 
           <InfoRow label="Device" value={adapterInfo.deviceName} />
           <InfoRow label="ELM327" value={adapterInfo.elmVersion} />
           <InfoRow label="Protocol" value={adapterInfo.protocol} />
+          {adapterInfo.ecuReachable === false && (
+            <p style={{ fontSize: '11px', color: COLORS.warn, marginTop: '8px' }}>
+              ECU not responding — check ignition is ON (engine off)
+            </p>
+          )}
+          {adapterInfo.diagLog?.length > 0 && (
+            <details style={{ marginTop: '10px' }}>
+              <summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>
+                Init log ({adapterInfo.diagLog.length} commands)
+              </summary>
+              <div style={{
+                marginTop: '6px', padding: '8px', borderRadius: '6px',
+                background: 'rgba(0,0,0,0.3)', fontSize: '10px', fontFamily: 'monospace',
+                color: COLORS.textDim, maxHeight: '200px', overflow: 'auto',
+                whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+              }}>
+                {adapterInfo.diagLog.map((d, i) => (
+                  <div key={i} style={{ marginBottom: '4px', color: d.threw ? COLORS.fault : COLORS.textDim }}>
+                    <span style={{ color: COLORS.accent }}>{d.command}</span>
+                    {' → '}
+                    {d.raw === null ? <span style={{ color: COLORS.warn }}>TIMEOUT</span> : `"${d.raw}"`}
+                    {d.cleaned !== d.raw && d.cleaned !== null && ` → "${d.cleaned}"`}
+                    {d.threw && ' ✗'}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
         </Card>
       )}
 

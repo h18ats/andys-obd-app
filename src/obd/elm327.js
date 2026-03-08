@@ -42,6 +42,35 @@ async function processQueue() {
   processing = false;
 }
 
+// --- Diagnostic log (ring buffer, last 30 commands) ---
+const diagLog = [];
+const DIAG_MAX = 30;
+
+function logDiag(command, rawResponse, cleaned, threw) {
+  diagLog.push({ ts: Date.now(), command, raw: rawResponse, cleaned, threw });
+  if (diagLog.length > DIAG_MAX) diagLog.shift();
+}
+
+/** Get the diagnostic log for debugging connection issues. */
+export function getDiagLog() { return [...diagLog]; }
+
+/**
+ * Send a command through the queue WITHOUT error checking.
+ * Used for init AT commands where any response (even garbage) means the adapter is alive.
+ * Still goes through the safety gate.
+ * @returns {Promise<string|null>} response or null on timeout
+ */
+async function sendLenientCommand(command, timeoutMs = 3000) {
+  const result = validateCommand(command);
+  if (!result.allowed) return null;
+  if (!isConnected()) return null;
+
+  const rawResponse = await enqueue(command.trim(), timeoutMs);
+  const response = cleanResponse(rawResponse, command);
+  logDiag(command, rawResponse, response, false);
+  return response;
+}
+
 // --- Response cleaning (strips noise before error detection) ---
 function cleanResponse(raw, sentCommand) {
   if (!raw) return raw;
@@ -80,8 +109,12 @@ const ELM_ERRORS = [
 
 function isELMError(response) {
   if (!response) return true;
-  const upper = response.toUpperCase();
-  return ELM_ERRORS.some((err) => upper.includes(err));
+  const upper = response.toUpperCase().trim();
+  // '?' must be an exact match (not includes) — prevents false positives on
+  // version strings or other responses that happen to contain '?'
+  return ELM_ERRORS.some((err) =>
+    err === '?' ? upper === '?' : upper.includes(err)
+  );
 }
 
 // --- Retry logic for transient CAN bus errors ---
@@ -140,9 +173,11 @@ export async function sendSafeCommand(command, timeoutMs = 5000) {
   const response = cleanResponse(rawResponse, command);
 
   if (isELMError(response)) {
+    logDiag(command, rawResponse, response, true);
     throw new Error(`ELM327 error: ${response || 'no response'}`);
   }
 
+  logDiag(command, rawResponse, response, false);
   return response;
 }
 
@@ -177,35 +212,38 @@ async function probeECU() {
  * @returns {Promise<{ elmVersion: string, protocol: string, protocolCode: string }>}
  */
 export async function initAdapter(protocolCode = '0', onProgress) {
+  // Clear diagnostic log for this session
+  diagLog.length = 0;
+
   // Wake-up poke — send a CR to flush any stale state
   try { await enqueue('\r', 1000); } catch {}
   await new Promise(r => setTimeout(r, 300));
 
-  // Double reset — handles cheap v2.1 clones that swallow first ATZ
+  // Double reset — uses enqueue (no error checking, ATZ response is messy)
+  onProgress?.('Resetting adapter...');
   try {
-    await enqueue('ATZ', 3000);
+    await enqueue('ATZ', 4000);
     await new Promise(r => setTimeout(r, 500));
   } catch {}
   try {
-    await enqueue('ATZ', 3000);
+    await enqueue('ATZ', 4000);
     await new Promise(r => setTimeout(r, 1000));
   } catch {}
 
-  // Configure FIRST (echo off, spaces off, etc.) so subsequent responses parse cleanly
-  for (const cmd of ['ATE0', 'ATL0', 'ATS0', 'ATH0']) {
-    try { await sendSafeCommand(cmd, 3000); } catch {}
-  }
+  // Configure — use lenient commands (any response = adapter alive, no error gate)
+  onProgress?.('Configuring adapter...');
+  await sendLenientCommand('ATE0', 3000);
+  await sendLenientCommand('ATL0', 3000);
+  await sendLenientCommand('ATS0', 3000);
+  await sendLenientCommand('ATH0', 3000);
 
-  // NOW identify — echo is off, response is clean
-  let version = 'Unknown';
-  try {
-    version = await sendSafeCommand('ATI', 5000);
-  } catch {}
+  // Identify — lenient, don't reject valid version strings
+  let version = await sendLenientCommand('ATI', 5000) || 'Unknown';
 
-  // Set protocol + adaptive timing
-  for (const cmd of [`ATSP${protocolCode}`, 'ATS1', 'ATAT2']) {
-    try { await sendSafeCommand(cmd, 3000); } catch {}
-  }
+  // Set protocol + adaptive timing — lenient
+  await sendLenientCommand(`ATSP${protocolCode}`, 3000);
+  await sendLenientCommand('ATS1', 3000);
+  await sendLenientCommand('ATAT2', 3000);
 
   // Probe ECU with selected protocol
   onProgress?.('Testing ECU connection...');
@@ -217,27 +255,22 @@ export async function initAdapter(protocolCode = '0', onProgress) {
     const fallbacks = [...CAN_PROTOCOLS, ...LEGACY_PROTOCOLS].filter(c => c !== protocolCode);
     for (const code of fallbacks) {
       onProgress?.(`Trying protocol ${code}...`);
-      try {
-        await sendSafeCommand(`ATSP${code}`, 3000);
-        await new Promise(r => setTimeout(r, 500));
-        if (await probeECU()) {
-          activeCode = code;
-          ecuReachable = true;
-          break;
-        }
-      } catch {}
+      await sendLenientCommand(`ATSP${code}`, 3000);
+      await new Promise(r => setTimeout(r, 500));
+      if (await probeECU()) {
+        activeCode = code;
+        ecuReachable = true;
+        break;
+      }
     }
   }
 
-  // Describe the active protocol
-  let protocol = 'Unknown';
-  try {
-    protocol = await sendSafeCommand('ATDP', 5000);
-  } catch {}
+  // Describe the active protocol — lenient
+  let protocol = await sendLenientCommand('ATDP', 5000) || 'Unknown';
 
   return {
-    elmVersion: version || 'Unknown',
-    protocol: protocol || 'Unknown',
+    elmVersion: version,
+    protocol,
     protocolCode: activeCode,
     ecuReachable,
   };
