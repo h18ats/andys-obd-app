@@ -289,7 +289,7 @@ export async function readVIN() {
  */
 export async function readBatteryVoltage() {
   try {
-    const response = await sendSafeCommand('ATRV', 3000);
+    const response = await sendWithRetry('ATRV', 3000);
     return response;
   } catch (err) {
     console.warn('Failed to read battery voltage:', err.message);

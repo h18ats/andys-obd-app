@@ -230,8 +230,8 @@ export default function App() {
       run: readVIN,
       onDone: (r) => r?.valid
         ? `VIN — ${r.vin}`
-        : { label: `VIN — ${r?.error || 'no response'}`, failed: true },
-      onFail: (err) => `VIN — ${err.message}`,
+        : { label: `VIN — ${(r?.error || 'no response').replace(/^ELM327 error:\s*/i, '')}`, failed: true },
+      onFail: (err) => `VIN — ${err.message.replace(/^ELM327 error:\s*/i, '')}`,
       fallback: { valid: false, error: 'read failed' },
     },
     {
@@ -463,7 +463,7 @@ export default function App() {
 
     // Build error from results
     const failures = [];
-    if (!vin?.valid) failures.push(`VIN: ${vin?.error || 'no response'}`);
+    if (!vin?.valid) failures.push(`VIN: ${(vin?.error || 'no response').replace(/^ELM327 error:\s*/i, '')}`);
     if (!voltage) failures.push('Battery: no response');
     if (!pids || pids.size === 0) failures.push('Supported PIDs: no response');
 
