@@ -10,7 +10,7 @@ const SERVICE_TYPES = [
   'Air Filter', 'Spark Plugs', 'Coolant', 'Other',
 ];
 
-export default function VehicleView({ connected, vinData, batteryVoltage, supportedPIDs, adapterInfo, readingVehicle, onReadVehicle, vehicles, activeVehicle, onSelectVehicle, onShowAddVehicle, onAddCurrentVehicle, onEditVehicle, onDeleteVehicle, onUpdateDtcStatus, expiryWarnings, onAddService, onDeleteService }) {
+export default function VehicleView({ connected, vinData, batteryVoltage, supportedPIDs, adapterInfo, readingVehicle, vehicleReadError, onReadVehicle, vehicles, activeVehicle, onSelectVehicle, onShowAddVehicle, onAddCurrentVehicle, onEditVehicle, onDeleteVehicle, onUpdateDtcStatus, expiryWarnings, onAddService, onDeleteService }) {
   const [editingNickname, setEditingNickname] = useState(false);
   const [nicknameInput, setNicknameInput] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -201,6 +201,23 @@ export default function VehicleView({ connected, vinData, batteryVoltage, suppor
           disabled={readingVehicle}
         />
       )}
+      {/* Vehicle read error feedback */}
+      {vehicleReadError && !readingVehicle && (
+        <Card style={{ borderColor: `${COLORS.warn}40` }}>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+            <span style={{ fontSize: '16px', flexShrink: 0 }}>⚠️</span>
+            <div>
+              <div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.warn, marginBottom: '4px' }}>
+                Vehicle Read Issue
+              </div>
+              <div style={{ fontSize: '11px', color: COLORS.textDim, lineHeight: 1.4 }}>
+                {vehicleReadError}
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
       {!connected && vehicles.length === 0 && (
         <div style={{ textAlign: 'center', padding: '30px 0', color: COLORS.textMuted }}>
           <div style={{ fontSize: '40px', marginBottom: '12px' }}>🔌</div>

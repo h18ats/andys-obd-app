@@ -171,6 +171,7 @@ export default function App() {
   const [batteryVoltage, setBatteryVoltage] = useState(null);
   const [supportedPIDs, setSupportedPIDs] = useState(new Set());
   const [readingVehicle, setReadingVehicle] = useState(false);
+  const [vehicleReadError, setVehicleReadError] = useState(null);
 
   // Custom dashboard widgets
   const [customWidgets, setCustomWidgets] = useState(() => {
@@ -382,6 +383,7 @@ export default function App() {
   // --- Read vehicle info ---
   const handleReadVehicle = useCallback(async () => {
     setReadingVehicle(true);
+    setVehicleReadError(null);
     try {
       const [vin, voltage, pids] = await Promise.all([
         readVIN(),
@@ -390,6 +392,18 @@ export default function App() {
       ]);
       setBatteryVoltage(voltage);
       setSupportedPIDs(pids);
+
+      // Build error report for anything that failed
+      const failures = [];
+      if (!vin?.valid) failures.push(`VIN: ${vin?.error || 'no response'}`);
+      if (!voltage) failures.push('Battery voltage: no response');
+      if (pids.size === 0) failures.push('Supported PIDs: no response');
+
+      if (failures.length > 0 && failures.length === 3) {
+        setVehicleReadError('Adapter connected but vehicle not responding. Try turning ignition to ON (engine off) and scan again.');
+      } else if (failures.length > 0) {
+        setVehicleReadError(failures.join(' · '));
+      }
 
       if (vin?.valid) {
         // Pre-compute values outside updater to keep it pure
@@ -427,6 +441,7 @@ export default function App() {
       }
     } catch (err) {
       console.warn('Vehicle read error:', err.message);
+      setVehicleReadError(`Read failed: ${err.message}`);
     }
     setReadingVehicle(false);
   }, []);
@@ -715,6 +730,7 @@ export default function App() {
     setCvmDTCs([]);
     setCvmScanAttempted(false);
     setCvmReachable(true);
+    setVehicleReadError(null);
     setVehicles([]);
     setActiveVehicleId(null);
     setBatteryVoltage(null);
@@ -859,6 +875,7 @@ export default function App() {
               supportedPIDs={supportedPIDs}
               adapterInfo={adapterInfo}
               readingVehicle={readingVehicle}
+              vehicleReadError={vehicleReadError}
               onReadVehicle={handleReadVehicle}
               vehicles={vehicles}
               activeVehicle={activeVehicle}
