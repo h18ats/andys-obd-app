@@ -38,6 +38,8 @@ const ALLOWED_AT_PREFIXES = [
   'ATSH',  // Set CAN header (tx address) — read-only, routes commands
   'ATCRA', // Set CAN receive address filter — read-only, filters responses
   'ATAR',  // Auto-set receive address — restores normal rx filtering
+  'ATAT',  // Adaptive timing control — configures ECU response wait times
+  'ATTP',  // Try protocol without persisting — non-destructive protocol test
 ];
 
 // --- Blocklist: these are ALWAYS rejected, even if they somehow pass the whitelist ---

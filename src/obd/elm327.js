@@ -42,6 +42,24 @@ async function processQueue() {
   processing = false;
 }
 
+// --- Response cleaning (strips noise before error detection) ---
+function cleanResponse(raw, sentCommand) {
+  if (!raw) return raw;
+  const lines = raw.split('\n');
+  const cmdUpper = sentCommand ? sentCommand.trim().toUpperCase() : '';
+  const cleaned = lines.filter(line => {
+    const trimmed = line.trim().toUpperCase();
+    if (!trimmed) return false;                          // blank lines
+    if (trimmed.startsWith('SEARCHING')) return false;   // SEARCHING...
+    if (trimmed.startsWith('BUS INIT')) return false;    // BUS INIT: ...
+    if (/^\xFF+$/.test(line.trim())) return false;       // 0xFF garbage
+    // Strip echo of sent command (clones ignore ATE0)
+    if (cmdUpper && trimmed === cmdUpper) return false;
+    return true;
+  });
+  return cleaned.join('\n').trim();
+}
+
 // --- ELM327 error detection ---
 const ELM_ERRORS = [
   'NO DATA',
@@ -49,7 +67,7 @@ const ELM_ERRORS = [
   'BUS INIT',
   'BUS ERROR',
   'CAN ERROR',
-  'ERROR',
+  // Note: standalone 'ERROR' removed — too broad, catches 'CAN ERROR' etc. via includes()
   'BUFFER FULL',
   'DATA ERROR',
   '?',
@@ -64,6 +82,38 @@ function isELMError(response) {
   if (!response) return true;
   const upper = response.toUpperCase();
   return ELM_ERRORS.some((err) => upper.includes(err));
+}
+
+// --- Retry logic for transient CAN bus errors ---
+const RETRYABLE_ERRORS = ['NO DATA', 'CAN ERROR', 'BUS INIT', 'BUS ERROR'];
+const NON_RETRYABLE_ERRORS = ['UNABLE TO CONNECT', '?', 'LV RESET'];
+const RETRY_DELAYS = [200, 500];
+
+function isRetryable(errorMessage) {
+  const upper = (errorMessage || '').toUpperCase();
+  if (NON_RETRYABLE_ERRORS.some(e => upper.includes(e))) return false;
+  return RETRYABLE_ERRORS.some(e => upper.includes(e));
+}
+
+/**
+ * Send a command with automatic retry on transient errors.
+ * Non-retryable errors throw immediately.
+ */
+async function sendWithRetry(command, timeoutMs = 5000, maxRetries = 2) {
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await sendSafeCommand(command, timeoutMs);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxRetries && isRetryable(err.message)) {
+        await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt] || 500));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
 }
 
 /**
@@ -86,7 +136,8 @@ export async function sendSafeCommand(command, timeoutMs = 5000) {
     throw new Error('Not connected to adapter');
   }
 
-  const response = await enqueue(command.trim(), timeoutMs);
+  const rawResponse = await enqueue(command.trim(), timeoutMs);
+  const response = cleanResponse(rawResponse, command);
 
   if (isELMError(response)) {
     throw new Error(`ELM327 error: ${response || 'no response'}`);
@@ -107,11 +158,15 @@ export async function initAdapter(protocolCode = '0') {
   try { await enqueue('\r', 1000); } catch {}
   await new Promise(r => setTimeout(r, 300));
 
-  // Reset — non-fatal, some adapters are slow or drop BLE briefly during reset
+  // Double reset — handles cheap v2.1 clones that swallow first ATZ
   let version = 'Unknown';
   try {
     await enqueue('ATZ', 3000);
-    await new Promise(r => setTimeout(r, 1000)); // Wait for adapter to finish resetting
+    await new Promise(r => setTimeout(r, 500));
+  } catch {}
+  try {
+    await enqueue('ATZ', 3000);
+    await new Promise(r => setTimeout(r, 1000));
   } catch {}
 
   // Identify
@@ -120,7 +175,7 @@ export async function initAdapter(protocolCode = '0') {
   } catch {}
 
   // Configure for clean OBD-II communication — each non-fatal so init continues
-  for (const cmd of ['ATE0', 'ATL0', 'ATS0', 'ATH0', `ATSP${protocolCode}`, 'ATS1']) {
+  for (const cmd of ['ATE0', 'ATL0', 'ATS0', 'ATH0', `ATSP${protocolCode}`, 'ATS1', 'ATAT2']) {
     try { await sendSafeCommand(cmd, 3000); } catch (err) {
       console.warn(`Init command ${cmd} failed:`, err.message);
     }
@@ -147,7 +202,7 @@ export async function initAdapter(protocolCode = '0') {
 export async function queryPID(pid) {
   const command = `01${pid}`;
   try {
-    const response = await sendSafeCommand(command, 3000);
+    const response = await sendWithRetry(command, 3000);
     const dataBytes = parseResponseBytes(response);
     return decodePID(pid, dataBytes);
   } catch (err) {
@@ -175,7 +230,7 @@ export async function queryPIDs(pids) {
  */
 export async function readStoredDTCs() {
   try {
-    const response = await sendSafeCommand('03', 5000);
+    const response = await sendWithRetry('03', 5000);
     return parseDTCResponse(response);
   } catch (err) {
     console.warn('Failed to read stored DTCs:', err.message);
@@ -189,7 +244,7 @@ export async function readStoredDTCs() {
  */
 export async function readPendingDTCs() {
   try {
-    const response = await sendSafeCommand('07', 5000);
+    const response = await sendWithRetry('07', 5000);
     return parseDTCResponse(response);
   } catch (err) {
     console.warn('Failed to read pending DTCs:', err.message);
@@ -203,7 +258,7 @@ export async function readPendingDTCs() {
  */
 export async function readPermanentDTCs() {
   try {
-    const response = await sendSafeCommand('0A', 5000);
+    const response = await sendWithRetry('0A', 5000);
     return parseDTCResponse(response);
   } catch (err) {
     console.warn('Failed to read permanent DTCs:', err.message);
@@ -217,7 +272,7 @@ export async function readPermanentDTCs() {
  */
 export async function readVIN() {
   try {
-    const response = await sendSafeCommand('0902', 8000);
+    const response = await sendWithRetry('0902', 8000);
     const lines = response.split('\n').filter((l) => l.trim());
     const vinStr = parseVINResponse(lines);
     if (!vinStr) return { valid: false, error: 'could not parse VIN response' };
@@ -252,20 +307,20 @@ export async function querySupportedPIDs() {
 
   try {
     // PID 00 returns a 4-byte bitmask of PIDs 01-20
-    const resp00 = await sendSafeCommand('0100', 3000);
+    const resp00 = await sendWithRetry('0100', 3000);
     const bytes00 = parseResponseBytes(resp00);
     decodeSupportedBitmask(bytes00, 0x01, supported);
 
     // If PID 20 is supported, query next range
     if (supported.has('20')) {
-      const resp20 = await sendSafeCommand('0120', 3000);
+      const resp20 = await sendWithRetry('0120', 3000);
       const bytes20 = parseResponseBytes(resp20);
       decodeSupportedBitmask(bytes20, 0x21, supported);
     }
 
     // If PID 40 is supported, query next range
     if (supported.has('40')) {
-      const resp40 = await sendSafeCommand('0140', 3000);
+      const resp40 = await sendWithRetry('0140', 3000);
       const bytes40 = parseResponseBytes(resp40);
       decodeSupportedBitmask(bytes40, 0x41, supported);
     }
@@ -299,7 +354,7 @@ function decodeSupportedBitmask(bytes, startPID, supported) {
  */
 export async function readMonitorStatus() {
   try {
-    const response = await sendSafeCommand('0101', 3000);
+    const response = await sendWithRetry('0101', 3000);
     const bytes = parseResponseBytes(response);
     if (bytes.length < 4) return null;
 

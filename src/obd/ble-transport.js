@@ -292,7 +292,13 @@ export async function sendCommand(command, timeoutMs = 5000) {
   const mtu = activeProfile.mtu || 20;
   const useWriteWithoutResponse = activeProfile.writeType === 'writeWithoutResponse';
 
+  const needsChunking = bytes.length > mtu;
   for (let offset = 0; offset < bytes.length; offset += mtu) {
+    // Inter-chunk delay prevents BLE write buffer overrun on slow adapters
+    if (needsChunking && offset > 0) {
+      await new Promise(r => setTimeout(r, 10));
+    }
+
     const chunkLength = Math.min(mtu, bytes.length - offset);
     const chunk = new DataView(bytes.buffer, offset, chunkLength);
 
@@ -328,6 +334,8 @@ export async function sendCommand(command, timeoutMs = 5000) {
 /**
  * Handle a BLE notification (data fragment from adapter).
  */
+const TAIL_TIMEOUT_MS = 1500; // Extra time for multi-frame responses (VIN, supported PIDs)
+
 function handleNotification(value) {
   if (!value || !value.buffer) return;
   // Use byteOffset + byteLength to handle DataViews that are slices of a larger buffer
@@ -347,6 +355,19 @@ function handleNotification(value) {
       return;
     }
   }
+
+  // Data arrived but no prompt yet — extend timeout so slow multi-frame
+  // responses aren't cut off before the final '>' packet arrives
+  if (responseResolve && responseTimeout) {
+    clearTimeout(responseTimeout);
+    const resolve = responseResolve;
+    responseTimeout = setTimeout(() => {
+      const partial = drainBuffer();
+      responseResolve = null;
+      responseTimeout = null;
+      resolve(partial || null);
+    }, TAIL_TIMEOUT_MS);
+  }
 }
 
 /**
@@ -360,6 +381,7 @@ function drainBuffer() {
   return raw
     .replace(/>/g, '')      // strip prompt
     .replace(/\x00/g, '')   // strip nulls
+    .replace(/\xFF/g, '')   // strip 0xFF garbage (common on cheap adapters)
     .replace(/\r\n/g, '\n') // normalise line endings
     .replace(/\r/g, '\n')
     .trim();

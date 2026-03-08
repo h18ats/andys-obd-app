@@ -324,13 +324,20 @@ export default function App() {
   // --- Polling loop ---
   const startPolling = useCallback(async () => {
     if (pollingRef.current) return;
+    if (demoRef.current) return; // Demo mode — polling is simulated
     pollingRef.current = true;
     setPolling(true);
 
     let consecutiveFailures = 0;
     while (pollingRef.current && isConnected()) {
       try {
-        const results = await queryPIDs(activePidsRef.current);
+        // Filter to supported PIDs if available (avoids guaranteed NO DATA errors)
+        const allPids = activePidsRef.current;
+        const supported = supportedPIDsRef.current;
+        const pidsToQuery = supported.size > 0
+          ? allPids.filter(pid => supported.has(pid))
+          : allPids;
+        const results = await queryPIDs(pidsToQuery);
         setLiveData(results);
         consecutiveFailures = 0;
         for (const [pid, data] of Object.entries(results)) {
@@ -367,6 +374,7 @@ export default function App() {
 
   // --- Read DTCs ---
   const handleReadDTCs = useCallback(async () => {
+    if (demoRef.current) return; // Demo mode — DTCs are pre-populated
     setReadingDTCs(true);
     const [stored, pending, permanent, monitor] = await dtcScan.run();
 
@@ -418,6 +426,7 @@ export default function App() {
 
   // --- Scan CVM roof module ---
   const handleScanCVM = useCallback(async () => {
+    if (demoRef.current) return; // Demo mode — no real adapter
     setReadingCVM(true);
     cvmScan.start();
 
@@ -443,6 +452,7 @@ export default function App() {
 
   // --- Read vehicle info ---
   const handleReadVehicle = useCallback(async () => {
+    if (demoRef.current) return; // Demo mode — vehicle info is pre-populated
     setReadingVehicle(true);
     setVehicleReadError(null);
 
@@ -665,6 +675,8 @@ export default function App() {
   const demoRef = useRef(null);
   const activePidsRef = useRef(activePids);
   activePidsRef.current = activePids;
+  const supportedPIDsRef = useRef(supportedPIDs);
+  supportedPIDsRef.current = supportedPIDs;
 
   const generateDemoData = useCallback((base, pidsToGenerate) => {
     const jitter = (v, range) => Math.max(0, v + (Math.random() - 0.5) * range);
