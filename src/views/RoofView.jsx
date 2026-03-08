@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { Card, Badge, InfoRow, COLORS } from '../components/shared.jsx';
+import { Card, Badge, InfoRow, ProgressCard, COLORS } from '../components/shared.jsx';
 import { ROOF_CODES, ROOF_CCID_CODES, ROOF_FAILURE_POINTS, lookupRoofCode, lookupCCID } from '../obd/roof-codes.js';
 
-export default function RoofView({ vinData, connected, cvmDTCs, readingCVM, cvmScanAttempted, cvmReachable, onScanCVM }) {
+export default function RoofView({ vinData, connected, cvmDTCs, readingCVM, cvmScanAttempted, cvmReachable, cvmScanSteps, onScanCVM }) {
   const [searchCode, setSearchCode] = useState('');
   const [searchResult, setSearchResult] = useState(null);
   const [activeSection, setActiveSection] = useState('lookup'); // lookup | failures | ccid
@@ -80,6 +80,11 @@ export default function RoofView({ vinData, connected, cvmDTCs, readingCVM, cvmS
           </div>
         )}
       </Card>
+
+      {/* CVM scan progress */}
+      {readingCVM && cvmScanSteps.length > 0 && (
+        <ProgressCard steps={cvmScanSteps} />
+      )}
 
       {/* Scan result summary */}
       {cvmScanAttempted && !readingCVM && cvmReachable && (

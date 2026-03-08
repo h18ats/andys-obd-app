@@ -136,12 +136,14 @@ export default function App() {
   const [permanentDTCs, setPermanentDTCs] = useState([]);
   const [readingDTCs, setReadingDTCs] = useState(false);
   const [monitorStatus, setMonitorStatus] = useState(null);
+  const [dtcScanSteps, setDtcScanSteps] = useState([]);
 
   // CVM roof scan
   const [cvmDTCs, setCvmDTCs] = useState(() => loadState('cvmDTCs', []));
   const [readingCVM, setReadingCVM] = useState(false);
   const [cvmScanAttempted, setCvmScanAttempted] = useState(() => loadState('cvmScanAttempted', false));
   const [cvmReachable, setCvmReachable] = useState(() => loadState('cvmReachable', true));
+  const [cvmScanSteps, setCvmScanSteps] = useState([]);
 
   // Vehicle management
   const [vehicles, setVehicles] = useState(() => {
@@ -172,6 +174,7 @@ export default function App() {
   const [supportedPIDs, setSupportedPIDs] = useState(new Set());
   const [readingVehicle, setReadingVehicle] = useState(false);
   const [vehicleReadError, setVehicleReadError] = useState(null);
+  const [vehicleReadSteps, setVehicleReadSteps] = useState([]);
 
   // Custom dashboard widgets
   const [customWidgets, setCustomWidgets] = useState(() => {
@@ -303,13 +306,47 @@ export default function App() {
   // --- Read DTCs ---
   const handleReadDTCs = useCallback(async () => {
     setReadingDTCs(true);
+    const steps = [
+      { label: 'Reading stored DTCs...', status: 'active' },
+      { label: 'Reading pending DTCs...', status: 'pending' },
+      { label: 'Reading permanent DTCs...', status: 'pending' },
+      { label: 'Checking monitor readiness...', status: 'pending' },
+    ];
+    setDtcScanSteps([...steps]);
+
     try {
-      const [stored, pending, permanent, monitor] = await Promise.all([
-        readStoredDTCs(),
-        readPendingDTCs(),
-        readPermanentDTCs(),
-        readMonitorStatus(),
-      ]);
+      // Step 1: Stored DTCs
+      let stored, pending, permanent, monitor;
+      try {
+        stored = await readStoredDTCs();
+        steps[0] = { label: `Stored DTCs${stored.length > 0 ? ` (${stored.length} found)` : ' — clear'}`, status: 'done' };
+      } catch { stored = []; steps[0] = { label: 'Stored DTCs — failed', status: 'failed' }; }
+      steps[1] = { ...steps[1], status: 'active' };
+      setDtcScanSteps([...steps]);
+
+      // Step 2: Pending DTCs
+      try {
+        pending = await readPendingDTCs();
+        steps[1] = { label: `Pending DTCs${pending.length > 0 ? ` (${pending.length} found)` : ' — clear'}`, status: 'done' };
+      } catch { pending = []; steps[1] = { label: 'Pending DTCs — failed', status: 'failed' }; }
+      steps[2] = { ...steps[2], status: 'active' };
+      setDtcScanSteps([...steps]);
+
+      // Step 3: Permanent DTCs
+      try {
+        permanent = await readPermanentDTCs();
+        steps[2] = { label: `Permanent DTCs${permanent.length > 0 ? ` (${permanent.length} found)` : ' — clear'}`, status: 'done' };
+      } catch { permanent = []; steps[2] = { label: 'Permanent DTCs — failed', status: 'failed' }; }
+      steps[3] = { ...steps[3], status: 'active' };
+      setDtcScanSteps([...steps]);
+
+      // Step 4: Monitor readiness
+      try {
+        monitor = await readMonitorStatus();
+        steps[3] = { label: 'Monitor readiness — done', status: 'done' };
+      } catch { monitor = null; steps[3] = { label: 'Monitor readiness — failed', status: 'failed' }; }
+      setDtcScanSteps([...steps]);
+
       setStoredDTCs(stored);
       setPendingDTCs(pending);
       setPermanentDTCs(permanent);
@@ -362,8 +399,26 @@ export default function App() {
   // --- Scan CVM roof module ---
   const handleScanCVM = useCallback(async () => {
     setReadingCVM(true);
+    const steps = [
+      { label: 'Setting CVM headers...', status: 'active' },
+      { label: 'Scanning roof module...', status: 'pending' },
+      { label: 'Restoring OBD mode...', status: 'pending' },
+    ];
+    setCvmScanSteps([...steps]);
+
+    const onProgress = (stage) => {
+      for (let i = 0; i < steps.length; i++) {
+        if (i < stage) steps[i] = { ...steps[i], status: 'done' };
+        else if (i === stage) steps[i] = { ...steps[i], status: 'active' };
+        else steps[i] = { ...steps[i], status: 'pending' };
+      }
+      setCvmScanSteps([...steps]);
+    };
+
     try {
-      const result = await readCVMDTCs();
+      const result = await readCVMDTCs(onProgress);
+      steps.forEach((_, i) => { steps[i] = { ...steps[i], status: 'done' }; });
+      setCvmScanSteps([...steps]);
       setCvmDTCs(result.dtcs);
       setCvmScanAttempted(true);
       setCvmReachable(result.reachable);
@@ -372,6 +427,9 @@ export default function App() {
       saveState('cvmReachable', result.reachable);
     } catch (err) {
       console.warn('CVM scan error:', err.message);
+      const activeIdx = steps.findIndex(s => s.status === 'active');
+      if (activeIdx >= 0) steps[activeIdx] = { ...steps[activeIdx], status: 'failed' };
+      setCvmScanSteps([...steps]);
       setCvmScanAttempted(true);
       setCvmReachable(false);
       saveState('cvmScanAttempted', true);
@@ -384,25 +442,49 @@ export default function App() {
   const handleReadVehicle = useCallback(async () => {
     setReadingVehicle(true);
     setVehicleReadError(null);
+    const steps = [
+      { label: 'Reading VIN...', status: 'active' },
+      { label: 'Checking battery...', status: 'pending' },
+      { label: 'Querying supported PIDs...', status: 'pending' },
+    ];
+    setVehicleReadSteps([...steps]);
+
     try {
-      const [vin, voltage, pids] = await Promise.all([
-        readVIN(),
-        readBatteryVoltage(),
-        querySupportedPIDs(),
-      ]);
+      // Step 1: VIN
+      let vin;
+      try {
+        vin = await readVIN();
+        steps[0] = { label: vin?.valid ? `VIN — ${vin.vin}` : `VIN — ${vin?.error || 'no response'}`, status: vin?.valid ? 'done' : 'failed' };
+      } catch (err) { vin = { valid: false, error: err.message }; steps[0] = { label: `VIN — ${err.message}`, status: 'failed' }; }
+      steps[1] = { ...steps[1], status: 'active' };
+      setVehicleReadSteps([...steps]);
+
+      // Step 2: Battery voltage
+      let voltage;
+      try {
+        voltage = await readBatteryVoltage();
+        steps[1] = { label: voltage ? `Battery — ${voltage}` : 'Battery — no response', status: voltage ? 'done' : 'failed' };
+      } catch { voltage = null; steps[1] = { label: 'Battery — failed', status: 'failed' }; }
+      steps[2] = { ...steps[2], status: 'active' };
+      setVehicleReadSteps([...steps]);
+
+      // Step 3: Supported PIDs
+      let pids;
+      try {
+        pids = await querySupportedPIDs();
+        steps[2] = { label: pids.size > 0 ? `Supported PIDs — ${pids.size} found` : 'Supported PIDs — no response', status: pids.size > 0 ? 'done' : 'failed' };
+      } catch { pids = new Set(); steps[2] = { label: 'Supported PIDs — failed', status: 'failed' }; }
+      setVehicleReadSteps([...steps]);
+
       setBatteryVoltage(voltage);
       setSupportedPIDs(pids);
 
-      // Build error report for anything that failed
-      const failures = [];
-      if (!vin?.valid) failures.push(`VIN: ${vin?.error || 'no response'}`);
-      if (!voltage) failures.push('Battery voltage: no response');
-      if (pids.size === 0) failures.push('Supported PIDs: no response');
-
-      if (failures.length > 0 && failures.length === 3) {
+      // Build error from step failures
+      const failedSteps = steps.filter(s => s.status === 'failed');
+      if (failedSteps.length === 3) {
         setVehicleReadError('Adapter connected but vehicle not responding. Try turning ignition to ON (engine off) and scan again.');
-      } else if (failures.length > 0) {
-        setVehicleReadError(failures.join(' · '));
+      } else if (failedSteps.length > 0) {
+        setVehicleReadError(failedSteps.map(s => s.label).join(' · '));
       }
 
       if (vin?.valid) {
@@ -731,6 +813,9 @@ export default function App() {
     setCvmScanAttempted(false);
     setCvmReachable(true);
     setVehicleReadError(null);
+    setDtcScanSteps([]);
+    setVehicleReadSteps([]);
+    setCvmScanSteps([]);
     setVehicles([]);
     setActiveVehicleId(null);
     setBatteryVoltage(null);
@@ -853,6 +938,7 @@ export default function App() {
               permanentDTCs={permanentDTCs}
               readingDTCs={readingDTCs}
               monitorStatus={monitorStatus}
+              dtcScanSteps={dtcScanSteps}
               onReadDTCs={handleReadDTCs}
             />
           )}
@@ -864,6 +950,7 @@ export default function App() {
               readingCVM={readingCVM}
               cvmScanAttempted={cvmScanAttempted}
               cvmReachable={cvmReachable}
+              cvmScanSteps={cvmScanSteps}
               onScanCVM={handleScanCVM}
             />
           )}
@@ -876,6 +963,7 @@ export default function App() {
               adapterInfo={adapterInfo}
               readingVehicle={readingVehicle}
               vehicleReadError={vehicleReadError}
+              vehicleReadSteps={vehicleReadSteps}
               onReadVehicle={handleReadVehicle}
               vehicles={vehicles}
               activeVehicle={activeVehicle}

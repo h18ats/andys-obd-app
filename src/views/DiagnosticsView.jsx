@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Card, Badge, ActionButton, NotConnected, COLORS } from '../components/shared.jsx';
+import { Card, Badge, ActionButton, NotConnected, ProgressCard, ScanVisual, COLORS } from '../components/shared.jsx';
 
 const SEVERITY_COLOR = { info: COLORS.accent, warning: COLORS.warn, critical: COLORS.fault };
 
@@ -169,7 +169,7 @@ function formatMonitorName(key) {
   return names[key] || key.replace(/([A-Z])/g, ' $1').trim();
 }
 
-export default function DiagnosticsView({ connected, storedDTCs, pendingDTCs, permanentDTCs, readingDTCs, monitorStatus, onReadDTCs }) {
+export default function DiagnosticsView({ connected, storedDTCs, pendingDTCs, permanentDTCs, readingDTCs, monitorStatus, dtcScanSteps, onReadDTCs }) {
   if (!connected) return <NotConnected />;
 
   const hasScanned = monitorStatus !== null || storedDTCs.length > 0 || pendingDTCs.length > 0 || permanentDTCs.length > 0;
@@ -184,13 +184,10 @@ export default function DiagnosticsView({ connected, storedDTCs, pendingDTCs, pe
       />
 
       {readingDTCs && (
-        <Card style={{ borderColor: `${COLORS.accent}40` }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div style={{ width: '16px', height: '16px', border: `2px solid ${COLORS.accent}`, borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
-            <p style={{ color: COLORS.textDim, fontSize: '12px', margin: 0 }}>Reading stored, pending, and permanent DTCs + monitor status...</p>
-          </div>
-          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-        </Card>
+        <>
+          <ScanVisual />
+          {dtcScanSteps.length > 0 && <ProgressCard steps={dtcScanSteps} />}
+        </>
       )}
 
       {/* Overall summary */}

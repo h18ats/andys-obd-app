@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Badge, COLORS, ActionButton, InfoRow } from '../components/shared.jsx';
+import { Card, Badge, COLORS, ActionButton, InfoRow, ProgressCard } from '../components/shared.jsx';
 import { getDatabaseSize } from '../obd/dtc-database.js';
 import { getAuditLog } from '../obd/command-safety.js';
 import { getRoofDatabaseSize } from '../obd/roof-codes.js';
@@ -10,7 +10,7 @@ const SERVICE_TYPES = [
   'Air Filter', 'Spark Plugs', 'Coolant', 'Other',
 ];
 
-export default function VehicleView({ connected, vinData, batteryVoltage, supportedPIDs, adapterInfo, readingVehicle, vehicleReadError, onReadVehicle, vehicles, activeVehicle, onSelectVehicle, onShowAddVehicle, onAddCurrentVehicle, onEditVehicle, onDeleteVehicle, onUpdateDtcStatus, expiryWarnings, onAddService, onDeleteService }) {
+export default function VehicleView({ connected, vinData, batteryVoltage, supportedPIDs, adapterInfo, readingVehicle, vehicleReadError, vehicleReadSteps, onReadVehicle, vehicles, activeVehicle, onSelectVehicle, onShowAddVehicle, onAddCurrentVehicle, onEditVehicle, onDeleteVehicle, onUpdateDtcStatus, expiryWarnings, onAddService, onDeleteService }) {
   const [editingNickname, setEditingNickname] = useState(false);
   const [nicknameInput, setNicknameInput] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -201,6 +201,11 @@ export default function VehicleView({ connected, vinData, batteryVoltage, suppor
           disabled={readingVehicle}
         />
       )}
+      {/* Vehicle read progress */}
+      {readingVehicle && vehicleReadSteps.length > 0 && (
+        <ProgressCard steps={vehicleReadSteps} />
+      )}
+
       {/* Vehicle read error feedback */}
       {vehicleReadError && !readingVehicle && (
         <Card style={{ borderColor: `${COLORS.warn}40` }}>

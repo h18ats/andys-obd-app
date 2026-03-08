@@ -287,4 +287,112 @@ export function SignalBars({ rssi }) {
   );
 }
 
+// --- ProgressCard (step checklist for scan/read operations) ---
+export function ProgressCard({ steps }) {
+  return (
+    <Card>
+      <style>{`@keyframes progressSpin { to { transform: rotate(360deg); } }`}</style>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {steps.map((step, i) => {
+          const icon = step.status === 'done' ? '✓'
+            : step.status === 'failed' ? '✕'
+            : step.status === 'active' ? null
+            : '·';
+          const color = step.status === 'done' ? COLORS.ok
+            : step.status === 'failed' ? COLORS.fault
+            : step.status === 'active' ? COLORS.accent
+            : COLORS.textMuted;
+
+          return (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              {step.status === 'active' ? (
+                <span style={{
+                  width: '14px', height: '14px', borderRadius: '50%',
+                  border: `2px solid ${COLORS.accent}`, borderTopColor: 'transparent',
+                  animation: 'progressSpin 0.8s linear infinite', flexShrink: 0,
+                }} />
+              ) : (
+                <span style={{
+                  width: '18px', height: '18px', borderRadius: '50%',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: step.status === 'pending' ? '16px' : '11px',
+                  fontWeight: 700, color,
+                  background: step.status === 'pending' ? 'none' : `${color}15`,
+                  flexShrink: 0,
+                }}>
+                  {icon}
+                </span>
+              )}
+              <span style={{
+                fontSize: '12px', fontWeight: step.status === 'active' ? 600 : 400,
+                color: step.status === 'pending' ? COLORS.textMuted : COLORS.text,
+              }}>
+                {step.label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+// --- ScanVisual (animated car silhouette with scan line for DTC view) ---
+export function ScanVisual() {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', padding: '8px 0' }}>
+      <style>{`
+        @keyframes scanLine {
+          0% { transform: translateX(-10px); opacity: 0; }
+          10% { opacity: 1; }
+          90% { opacity: 1; }
+          100% { transform: translateX(110px); opacity: 0; }
+        }
+      `}</style>
+      <svg width="120" height="60" viewBox="0 0 120 60" fill="none">
+        {/* Car body silhouette */}
+        <path
+          d="M15 42 L20 42 L22 38 L30 28 L42 22 L52 20 L68 20 L82 22 L92 28 L98 38 L100 42 L105 42"
+          stroke={COLORS.textMuted}
+          strokeWidth="1.5"
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        {/* Roof line */}
+        <path
+          d="M42 22 L42 28 L30 28 M82 22 L82 28 L92 28"
+          stroke={COLORS.textMuted}
+          strokeWidth="1"
+          fill="none"
+          opacity="0.5"
+        />
+        {/* Wheels */}
+        <circle cx="32" cy="44" r="6" stroke={COLORS.textMuted} strokeWidth="1.5" fill="none" />
+        <circle cx="32" cy="44" r="2.5" fill={COLORS.textMuted} opacity="0.3" />
+        <circle cx="88" cy="44" r="6" stroke={COLORS.textMuted} strokeWidth="1.5" fill="none" />
+        <circle cx="88" cy="44" r="2.5" fill={COLORS.textMuted} opacity="0.3" />
+        {/* Ground line */}
+        <line x1="10" y1="50" x2="110" y2="50" stroke={COLORS.textMuted} strokeWidth="0.5" opacity="0.3" />
+        {/* Scan line (animated) */}
+        <rect
+          x="0" y="14" width="3" height="38" rx="1.5"
+          fill={COLORS.accent}
+          opacity="0.9"
+          style={{ animation: 'scanLine 2s ease-in-out infinite' }}
+        >
+          <animate attributeName="opacity" values="0;0.9;0.9;0" dur="2s" repeatCount="indefinite" />
+        </rect>
+        {/* Scan glow */}
+        <rect
+          x="-2" y="12" width="7" height="42" rx="3.5"
+          fill={COLORS.accent}
+          opacity="0.15"
+          style={{ animation: 'scanLine 2s ease-in-out infinite' }}
+        />
+      </svg>
+    </div>
+  );
+}
+
 export { COLORS };

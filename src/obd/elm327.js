@@ -337,11 +337,12 @@ export async function readMonitorStatus() {
  *
  * @returns {Promise<{ dtcs: Array, reachable: boolean, raw: string }>}
  */
-export async function readCVMDTCs() {
+export async function readCVMDTCs(onProgress) {
   const result = { dtcs: [], reachable: false, raw: '' };
 
   try {
     // 1. Enable headers so we can see response addresses
+    if (onProgress) onProgress(0); // Setting CVM headers
     await sendSafeCommand('ATH1', 3000);
 
     // 2. Set transmit address to CVM module
@@ -351,6 +352,7 @@ export async function readCVMDTCs() {
     await sendSafeCommand('ATCRA 6E0', 3000);
 
     // 4. Send UDS ReadDTCInformation — status mask 0xFF (all stored DTCs)
+    if (onProgress) onProgress(1); // Scanning roof module
     let response;
     try {
       response = await enqueue('19 02 FF', 8000);
@@ -369,6 +371,7 @@ export async function readCVMDTCs() {
     }
   } finally {
     // 5. ALWAYS restore normal OBD-II mode, even if scan failed
+    if (onProgress) onProgress(2); // Restoring OBD mode
     try { await sendSafeCommand('ATH0', 3000); } catch {}
     try { await sendSafeCommand('ATAR', 3000); } catch {}
     try { await sendSafeCommand('ATD', 3000); } catch {}
