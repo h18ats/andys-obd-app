@@ -185,6 +185,12 @@ export default function ConnectView({ scanning, devices, connecting, connected, 
           <InfoRow label="Device" value={adapterInfo.deviceName} />
           <InfoRow label="ELM327" value={adapterInfo.elmVersion} />
           <InfoRow label="Protocol" value={adapterInfo.protocol} />
+          {adapterInfo.lineEnding && (
+            <InfoRow label="Terminator" value={adapterInfo.lineEnding} />
+          )}
+          {adapterInfo.writeType && (
+            <InfoRow label="Write" value={adapterInfo.writeType} />
+          )}
           {adapterInfo.ecuReachable === false && (
             <p style={{ fontSize: '11px', color: COLORS.warn, marginTop: '8px' }}>
               ECU not responding — check ignition is ON (engine off)

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Pulse, ErrorBoundary, AnimationStyles, COLORS, Badge } from './components/shared.jsx';
-import { scanForAdapters, connect, disconnect, isConnected } from './obd/ble-transport.js';
+import { scanForAdapters, connect, disconnect, isConnected, getConnectionInfo } from './obd/ble-transport.js';
 import { initAdapter, queryPIDs, readStoredDTCs, readPendingDTCs, readPermanentDTCs, readVIN, readBatteryVoltage, querySupportedPIDs, readMonitorStatus, readCVMDTCs, clearQueue, getDiagLog } from './obd/elm327.js';
 import { ALL_PIDS, PIDS } from './obd/obd-pids.js';
 import { ADAPTER_PROFILES, getAllProfiles, loadCustomProfiles, saveCustomProfile, deleteCustomProfile } from './obd/adapter-profiles.js';
@@ -297,7 +297,8 @@ export default function App() {
 
       setConnectStatus('Initialising adapter...');
       const info = await initAdapter(selectedProtocol, setConnectStatus);
-      setAdapterInfo({ ...info, deviceName: device.name, diagLog: getDiagLog() });
+      const connInfo = getConnectionInfo();
+      setAdapterInfo({ ...info, deviceName: device.name, diagLog: getDiagLog(), lineEnding: connInfo?.lineEnding, writeType: connInfo?.profile?.writeType });
       setConnected(true);
       setView(VIEWS.DASHBOARD);
     } catch (err) {

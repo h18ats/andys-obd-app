@@ -39,6 +39,7 @@ let responseBuffer = [];
 let responseResolve = null;
 let responseTimeout = null;
 let initialised = false;
+let lineEnding = '\r'; // Default; auto-detected during handshake
 
 /**
  * Initialise the BLE client. Must be called once before scanning.
@@ -167,7 +168,53 @@ export async function connect(deviceId, deviceName, profile, onProgress) {
     'Failed to set up adapter communication. Try disconnecting and reconnecting.'
   );
 
+  // Handshake — detect working line ending and write method
+  onProgress?.('Handshaking...');
+  lineEnding = '\r'; // reset default
+  const handshook = await handshake(deviceId);
+  if (!handshook) {
+    console.warn('Handshake failed — adapter may not respond to commands');
+  }
+
   return { deviceId, profile: activeProfile };
+}
+
+/**
+ * Handshake: send "AT\r" and wait for any response. If nothing comes back,
+ * try "AT\r\n" (some Chinese clones need CRLF). If still nothing, flip
+ * the write method (write vs writeWithoutResponse). Returns true if any
+ * combination got a response.
+ */
+async function handshake(deviceId) {
+  // Try 1: default \r
+  if (await ping()) return true;
+
+  // Try 2: \r\n (common Chinese clone requirement)
+  lineEnding = '\r\n';
+  if (await ping()) return true;
+
+  // Try 3: flip write method + \r\n
+  activeProfile.writeType = activeProfile.writeType === 'writeWithoutResponse' ? 'write' : 'writeWithoutResponse';
+  if (await ping()) return true;
+
+  // Try 4: flipped write method + \r
+  lineEnding = '\r';
+  if (await ping()) return true;
+
+  // Restore defaults
+  activeProfile.writeType = 'writeWithoutResponse';
+  lineEnding = '\r';
+  return false;
+}
+
+/**
+ * Send "AT" with the current lineEnding/writeType and check if any data arrives.
+ * Uses sendCommand internally so the response buffering works correctly.
+ */
+async function ping() {
+  // sendCommand appends lineEnding internally now
+  const resp = await sendCommand('AT', 2000);
+  return resp !== null && resp.length > 0;
 }
 
 function withTimeout(promise, ms, message) {
@@ -258,6 +305,7 @@ export async function disconnect() {
   connectedDeviceId = null;
   activeProfile = null;
   responseBuffer = [];
+  lineEnding = '\r';
   if (responseResolve) {
     responseResolve(null);
     responseResolve = null;
@@ -284,8 +332,8 @@ export async function sendCommand(command, timeoutMs = 5000) {
   // Clear any stale buffer
   responseBuffer = [];
 
-  // Encode command + carriage return
-  const cmdStr = command.trim() + '\r';
+  // Encode command + line ending (auto-detected during handshake)
+  const cmdStr = command.trim() + lineEnding;
   const bytes = new TextEncoder().encode(cmdStr);
 
   // Chunk writes to respect MTU
@@ -395,6 +443,6 @@ export function isConnected() {
 /** Get the current connection info. */
 export function getConnectionInfo() {
   return connectedDeviceId
-    ? { deviceId: connectedDeviceId, profile: activeProfile }
+    ? { deviceId: connectedDeviceId, profile: activeProfile, lineEnding: lineEnding === '\r\n' ? 'CRLF' : 'CR' }
     : null;
 }
