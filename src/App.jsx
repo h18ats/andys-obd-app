@@ -6,6 +6,7 @@ import { ALL_PIDS, PIDS } from './obd/obd-pids.js';
 import { ADAPTER_PROFILES, getAllProfiles, loadCustomProfiles, saveCustomProfile, deleteCustomProfile } from './obd/adapter-profiles.js';
 import { decodeVIN } from './obd/vin-decoder.js';
 import { getAllCatalogPIDs } from './obd/pid-catalog.js';
+import useSteppedOperation from './hooks/useSteppedOperation.js';
 import ConnectView from './views/ConnectView.jsx';
 import DashboardView from './views/DashboardView.jsx';
 import CustomDashboardView from './views/CustomDashboardView.jsx';
@@ -136,14 +137,12 @@ export default function App() {
   const [permanentDTCs, setPermanentDTCs] = useState([]);
   const [readingDTCs, setReadingDTCs] = useState(false);
   const [monitorStatus, setMonitorStatus] = useState(null);
-  const [dtcScanSteps, setDtcScanSteps] = useState([]);
 
   // CVM roof scan
   const [cvmDTCs, setCvmDTCs] = useState(() => loadState('cvmDTCs', []));
   const [readingCVM, setReadingCVM] = useState(false);
   const [cvmScanAttempted, setCvmScanAttempted] = useState(() => loadState('cvmScanAttempted', false));
   const [cvmReachable, setCvmReachable] = useState(() => loadState('cvmReachable', true));
-  const [cvmScanSteps, setCvmScanSteps] = useState([]);
 
   // Vehicle management
   const [vehicles, setVehicles] = useState(() => {
@@ -174,7 +173,6 @@ export default function App() {
   const [supportedPIDs, setSupportedPIDs] = useState(new Set());
   const [readingVehicle, setReadingVehicle] = useState(false);
   const [vehicleReadError, setVehicleReadError] = useState(null);
-  const [vehicleReadSteps, setVehicleReadSteps] = useState([]);
 
   // Custom dashboard widgets
   const [customWidgets, setCustomWidgets] = useState(() => {
@@ -193,6 +191,70 @@ export default function App() {
   // Derived state (backward-compatible)
   const activeVehicle = vehicles.find(v => v.id === activeVehicleId) || vehicles[0] || null;
   const vinData = activeVehicle?.vinData || null;
+
+  // --- Stepped operations (progress tracking for scans/reads) ---
+  const dtcScan = useSteppedOperation([
+    {
+      label: 'Reading stored DTCs...',
+      run: readStoredDTCs,
+      onDone: (r) => `Stored DTCs${r.length > 0 ? ` (${r.length} found)` : ' — clear'}`,
+      onFail: () => 'Stored DTCs — failed',
+      fallback: [],
+    },
+    {
+      label: 'Reading pending DTCs...',
+      run: readPendingDTCs,
+      onDone: (r) => `Pending DTCs${r.length > 0 ? ` (${r.length} found)` : ' — clear'}`,
+      onFail: () => 'Pending DTCs — failed',
+      fallback: [],
+    },
+    {
+      label: 'Reading permanent DTCs...',
+      run: readPermanentDTCs,
+      onDone: (r) => `Permanent DTCs${r.length > 0 ? ` (${r.length} found)` : ' — clear'}`,
+      onFail: () => 'Permanent DTCs — failed',
+      fallback: [],
+    },
+    {
+      label: 'Checking monitor readiness...',
+      run: readMonitorStatus,
+      onDone: () => 'Monitor readiness — done',
+      onFail: () => 'Monitor readiness — failed',
+      fallback: null,
+    },
+  ]);
+
+  const vehicleRead = useSteppedOperation([
+    {
+      label: 'Reading VIN...',
+      run: readVIN,
+      onDone: (r) => r?.valid
+        ? `VIN — ${r.vin}`
+        : { label: `VIN — ${r?.error || 'no response'}`, failed: true },
+      onFail: (err) => `VIN — ${err.message}`,
+      fallback: { valid: false, error: 'read failed' },
+    },
+    {
+      label: 'Checking battery...',
+      run: readBatteryVoltage,
+      onDone: (r) => r ? `Battery — ${r}` : { label: 'Battery — no response', failed: true },
+      onFail: () => 'Battery — failed',
+      fallback: null,
+    },
+    {
+      label: 'Querying supported PIDs...',
+      run: querySupportedPIDs,
+      onDone: (r) => r.size > 0 ? `Supported PIDs — ${r.size} found` : { label: 'Supported PIDs — no response', failed: true },
+      onFail: () => 'Supported PIDs — failed',
+      fallback: new Set(),
+    },
+  ]);
+
+  const cvmScan = useSteppedOperation([
+    { label: 'Setting CVM headers...', run: () => {}, fallback: null },
+    { label: 'Scanning roof module...', run: () => {}, fallback: null },
+    { label: 'Restoring OBD mode...', run: () => {}, fallback: null },
+  ]);
 
   // Hash routing
   useEffect(() => {
@@ -306,119 +368,62 @@ export default function App() {
   // --- Read DTCs ---
   const handleReadDTCs = useCallback(async () => {
     setReadingDTCs(true);
-    const steps = [
-      { label: 'Reading stored DTCs...', status: 'active' },
-      { label: 'Reading pending DTCs...', status: 'pending' },
-      { label: 'Reading permanent DTCs...', status: 'pending' },
-      { label: 'Checking monitor readiness...', status: 'pending' },
-    ];
-    setDtcScanSteps([...steps]);
+    const [stored, pending, permanent, monitor] = await dtcScan.run();
 
-    try {
-      // Step 1: Stored DTCs
-      let stored, pending, permanent, monitor;
-      try {
-        stored = await readStoredDTCs();
-        steps[0] = { label: `Stored DTCs${stored.length > 0 ? ` (${stored.length} found)` : ' — clear'}`, status: 'done' };
-      } catch { stored = []; steps[0] = { label: 'Stored DTCs — failed', status: 'failed' }; }
-      steps[1] = { ...steps[1], status: 'active' };
-      setDtcScanSteps([...steps]);
+    setStoredDTCs(stored);
+    setPendingDTCs(pending);
+    setPermanentDTCs(permanent);
+    setMonitorStatus(monitor);
 
-      // Step 2: Pending DTCs
-      try {
-        pending = await readPendingDTCs();
-        steps[1] = { label: `Pending DTCs${pending.length > 0 ? ` (${pending.length} found)` : ' — clear'}`, status: 'done' };
-      } catch { pending = []; steps[1] = { label: 'Pending DTCs — failed', status: 'failed' }; }
-      steps[2] = { ...steps[2], status: 'active' };
-      setDtcScanSteps([...steps]);
-
-      // Step 3: Permanent DTCs
-      try {
-        permanent = await readPermanentDTCs();
-        steps[2] = { label: `Permanent DTCs${permanent.length > 0 ? ` (${permanent.length} found)` : ' — clear'}`, status: 'done' };
-      } catch { permanent = []; steps[2] = { label: 'Permanent DTCs — failed', status: 'failed' }; }
-      steps[3] = { ...steps[3], status: 'active' };
-      setDtcScanSteps([...steps]);
-
-      // Step 4: Monitor readiness
-      try {
-        monitor = await readMonitorStatus();
-        steps[3] = { label: 'Monitor readiness — done', status: 'done' };
-      } catch { monitor = null; steps[3] = { label: 'Monitor readiness — failed', status: 'failed' }; }
-      setDtcScanSteps([...steps]);
-
-      setStoredDTCs(stored);
-      setPendingDTCs(pending);
-      setPermanentDTCs(permanent);
-      setMonitorStatus(monitor);
-
-      // Merge into active vehicle's DTC history
-      const targetId = activeVehicle?.id;
-      if (targetId) {
-        const now = new Date().toISOString();
-        const allDtcs = [
-          ...stored.map(d => ({ ...d, source: 'stored' })),
-          ...pending.map(d => ({ ...d, source: 'pending' })),
-          ...permanent.map(d => ({ ...d, source: 'permanent' })),
-        ];
-        if (allDtcs.length > 0) {
-          // Pre-compute IDs outside updater to keep it pure
-          let idCounter = 0;
-          const dtcIds = allDtcs.map(() => `dtc_${Date.now()}_${(idCounter++).toString(36)}_${Math.random().toString(36).slice(2, 6)}`);
-          setVehicles(prev => {
-            const next = prev.map(v => {
-              if (v.id !== targetId) return v;
-              const history = [...(v.dtcHistory || [])];
-              for (let i = 0; i < allDtcs.length; i++) {
-                const dtc = allDtcs[i];
-                const idx = history.findIndex(h => h.code === dtc.code);
-                if (idx >= 0) {
-                  history[idx] = { ...history[idx], lastSeen: now, occurrences: (history[idx].occurrences || 1) + 1, source: dtc.source };
-                } else {
-                  history.push({
-                    id: dtcIds[i],
-                    code: dtc.code, desc: dtc.desc, severity: dtc.severity, source: dtc.source,
-                    firstSeen: now, lastSeen: now, occurrences: 1,
-                    status: 'active', statusChangedAt: null, notes: '',
-                  });
-                }
+    // Merge into active vehicle's DTC history
+    const targetId = activeVehicle?.id;
+    if (targetId) {
+      const now = new Date().toISOString();
+      const allDtcs = [
+        ...stored.map(d => ({ ...d, source: 'stored' })),
+        ...pending.map(d => ({ ...d, source: 'pending' })),
+        ...permanent.map(d => ({ ...d, source: 'permanent' })),
+      ];
+      if (allDtcs.length > 0) {
+        let idCounter = 0;
+        const dtcIds = allDtcs.map(() => `dtc_${Date.now()}_${(idCounter++).toString(36)}_${Math.random().toString(36).slice(2, 6)}`);
+        setVehicles(prev => {
+          const next = prev.map(v => {
+            if (v.id !== targetId) return v;
+            const history = [...(v.dtcHistory || [])];
+            for (let i = 0; i < allDtcs.length; i++) {
+              const dtc = allDtcs[i];
+              const idx = history.findIndex(h => h.code === dtc.code);
+              if (idx >= 0) {
+                history[idx] = { ...history[idx], lastSeen: now, occurrences: (history[idx].occurrences || 1) + 1, source: dtc.source };
+              } else {
+                history.push({
+                  id: dtcIds[i],
+                  code: dtc.code, desc: dtc.desc, severity: dtc.severity, source: dtc.source,
+                  firstSeen: now, lastSeen: now, occurrences: 1,
+                  status: 'active', statusChangedAt: null, notes: '',
+                });
               }
-              return { ...v, dtcHistory: history };
-            });
-            saveState('vehicles', next);
-            return next;
+            }
+            return { ...v, dtcHistory: history };
           });
-        }
+          saveState('vehicles', next);
+          return next;
+        });
       }
-    } catch (err) {
-      console.warn('DTC read error:', err.message);
     }
+
     setReadingDTCs(false);
   }, [activeVehicle?.id]);
 
   // --- Scan CVM roof module ---
   const handleScanCVM = useCallback(async () => {
     setReadingCVM(true);
-    const steps = [
-      { label: 'Setting CVM headers...', status: 'active' },
-      { label: 'Scanning roof module...', status: 'pending' },
-      { label: 'Restoring OBD mode...', status: 'pending' },
-    ];
-    setCvmScanSteps([...steps]);
-
-    const onProgress = (stage) => {
-      for (let i = 0; i < steps.length; i++) {
-        if (i < stage) steps[i] = { ...steps[i], status: 'done' };
-        else if (i === stage) steps[i] = { ...steps[i], status: 'active' };
-        else steps[i] = { ...steps[i], status: 'pending' };
-      }
-      setCvmScanSteps([...steps]);
-    };
+    cvmScan.start();
 
     try {
-      const result = await readCVMDTCs(onProgress);
-      steps.forEach((_, i) => { steps[i] = { ...steps[i], status: 'done' }; });
-      setCvmScanSteps([...steps]);
+      const result = await readCVMDTCs((stage) => cvmScan.markStep(stage));
+      cvmScan.finish();
       setCvmDTCs(result.dtcs);
       setCvmScanAttempted(true);
       setCvmReachable(result.reachable);
@@ -427,9 +432,7 @@ export default function App() {
       saveState('cvmReachable', result.reachable);
     } catch (err) {
       console.warn('CVM scan error:', err.message);
-      const activeIdx = steps.findIndex(s => s.status === 'active');
-      if (activeIdx >= 0) steps[activeIdx] = { ...steps[activeIdx], status: 'failed' };
-      setCvmScanSteps([...steps]);
+      cvmScan.failCurrent();
       setCvmScanAttempted(true);
       setCvmReachable(false);
       saveState('cvmScanAttempted', true);
@@ -442,89 +445,58 @@ export default function App() {
   const handleReadVehicle = useCallback(async () => {
     setReadingVehicle(true);
     setVehicleReadError(null);
-    const steps = [
-      { label: 'Reading VIN...', status: 'active' },
-      { label: 'Checking battery...', status: 'pending' },
-      { label: 'Querying supported PIDs...', status: 'pending' },
-    ];
-    setVehicleReadSteps([...steps]);
 
-    try {
-      // Step 1: VIN
-      let vin;
-      try {
-        vin = await readVIN();
-        steps[0] = { label: vin?.valid ? `VIN — ${vin.vin}` : `VIN — ${vin?.error || 'no response'}`, status: vin?.valid ? 'done' : 'failed' };
-      } catch (err) { vin = { valid: false, error: err.message }; steps[0] = { label: `VIN — ${err.message}`, status: 'failed' }; }
-      steps[1] = { ...steps[1], status: 'active' };
-      setVehicleReadSteps([...steps]);
+    const [vin, voltage, pids] = await vehicleRead.run();
 
-      // Step 2: Battery voltage
-      let voltage;
-      try {
-        voltage = await readBatteryVoltage();
-        steps[1] = { label: voltage ? `Battery — ${voltage}` : 'Battery — no response', status: voltage ? 'done' : 'failed' };
-      } catch { voltage = null; steps[1] = { label: 'Battery — failed', status: 'failed' }; }
-      steps[2] = { ...steps[2], status: 'active' };
-      setVehicleReadSteps([...steps]);
+    setBatteryVoltage(voltage);
+    setSupportedPIDs(pids || new Set());
 
-      // Step 3: Supported PIDs
-      let pids;
-      try {
-        pids = await querySupportedPIDs();
-        steps[2] = { label: pids.size > 0 ? `Supported PIDs — ${pids.size} found` : 'Supported PIDs — no response', status: pids.size > 0 ? 'done' : 'failed' };
-      } catch { pids = new Set(); steps[2] = { label: 'Supported PIDs — failed', status: 'failed' }; }
-      setVehicleReadSteps([...steps]);
+    // Build error from results
+    const failures = [];
+    if (!vin?.valid) failures.push(`VIN: ${vin?.error || 'no response'}`);
+    if (!voltage) failures.push('Battery: no response');
+    if (!pids || pids.size === 0) failures.push('Supported PIDs: no response');
 
-      setBatteryVoltage(voltage);
-      setSupportedPIDs(pids);
+    if (failures.length === 3) {
+      setVehicleReadError('Adapter connected but vehicle not responding. Try turning ignition to ON (engine off) and scan again.');
+    } else if (failures.length > 0) {
+      setVehicleReadError(failures.join(' · '));
+    }
 
-      // Build error from step failures
-      const failedSteps = steps.filter(s => s.status === 'failed');
-      if (failedSteps.length === 3) {
-        setVehicleReadError('Adapter connected but vehicle not responding. Try turning ignition to ON (engine off) and scan again.');
-      } else if (failedSteps.length > 0) {
-        setVehicleReadError(failedSteps.map(s => s.label).join(' · '));
-      }
-
-      if (vin?.valid) {
-        // Pre-compute values outside updater to keep it pure
-        const now = new Date().toISOString();
-        const newVehicleId = `v_${Date.now()}`;
-        let newActiveId = null;
-        setVehicles(prev => {
-          const existing = prev.find(v => v.vinData?.vin === vin.vin);
-          if (existing) {
-            newActiveId = existing.id;
-            const next = prev.map(v => v.id === existing.id
-              ? { ...v, vinData: vin, lastConnected: now }
-              : v
-            );
-            saveState('vehicles', next);
-            return next;
-          }
-          const vehicle = {
-            id: newVehicleId,
-            nickname: vin.model ? `MINI ${vin.model}` : 'My Vehicle',
-            vinData: vin,
-            addedAt: now,
-            lastConnected: now,
-            dtcHistory: [],
-          };
-          newActiveId = vehicle.id;
-          const next = [...prev, vehicle];
+    if (vin?.valid) {
+      const now = new Date().toISOString();
+      const newVehicleId = `v_${Date.now()}`;
+      let newActiveId = null;
+      setVehicles(prev => {
+        const existing = prev.find(v => v.vinData?.vin === vin.vin);
+        if (existing) {
+          newActiveId = existing.id;
+          const next = prev.map(v => v.id === existing.id
+            ? { ...v, vinData: vin, lastConnected: now }
+            : v
+          );
           saveState('vehicles', next);
           return next;
-        });
-        if (newActiveId) {
-          setActiveVehicleId(newActiveId);
-          saveState('active_vehicle', newActiveId);
         }
+        const vehicle = {
+          id: newVehicleId,
+          nickname: vin.model ? `MINI ${vin.model}` : 'My Vehicle',
+          vinData: vin,
+          addedAt: now,
+          lastConnected: now,
+          dtcHistory: [],
+        };
+        newActiveId = vehicle.id;
+        const next = [...prev, vehicle];
+        saveState('vehicles', next);
+        return next;
+      });
+      if (newActiveId) {
+        setActiveVehicleId(newActiveId);
+        saveState('active_vehicle', newActiveId);
       }
-    } catch (err) {
-      console.warn('Vehicle read error:', err.message);
-      setVehicleReadError(`Read failed: ${err.message}`);
     }
+
     setReadingVehicle(false);
   }, []);
 
@@ -813,9 +785,9 @@ export default function App() {
     setCvmScanAttempted(false);
     setCvmReachable(true);
     setVehicleReadError(null);
-    setDtcScanSteps([]);
-    setVehicleReadSteps([]);
-    setCvmScanSteps([]);
+    dtcScan.reset();
+    vehicleRead.reset();
+    cvmScan.reset();
     setVehicles([]);
     setActiveVehicleId(null);
     setBatteryVoltage(null);
@@ -938,7 +910,7 @@ export default function App() {
               permanentDTCs={permanentDTCs}
               readingDTCs={readingDTCs}
               monitorStatus={monitorStatus}
-              dtcScanSteps={dtcScanSteps}
+              dtcScanSteps={dtcScan.steps}
               onReadDTCs={handleReadDTCs}
             />
           )}
@@ -950,7 +922,7 @@ export default function App() {
               readingCVM={readingCVM}
               cvmScanAttempted={cvmScanAttempted}
               cvmReachable={cvmReachable}
-              cvmScanSteps={cvmScanSteps}
+              cvmScanSteps={cvmScan.steps}
               onScanCVM={handleScanCVM}
             />
           )}
@@ -963,7 +935,7 @@ export default function App() {
               adapterInfo={adapterInfo}
               readingVehicle={readingVehicle}
               vehicleReadError={vehicleReadError}
-              vehicleReadSteps={vehicleReadSteps}
+              vehicleReadSteps={vehicleRead.steps}
               onReadVehicle={handleReadVehicle}
               vehicles={vehicles}
               activeVehicle={activeVehicle}
