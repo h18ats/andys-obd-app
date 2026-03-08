@@ -146,39 +146,42 @@ export async function sendSafeCommand(command, timeoutMs = 5000) {
   return response;
 }
 
-// Protocol codes ordered by likelihood on modern vehicles (CAN first, then legacy)
-const PROTOCOL_FALLBACKS = ['6', '7', '8', '9', '3', '4', '5', '1', '2'];
+// CAN protocols cover >95% of vehicles (2008+). Legacy only if CAN fails.
+const CAN_PROTOCOLS = ['6', '7', '8', '9'];
+const LEGACY_PROTOCOLS = ['3', '4', '5'];
 
 /**
  * Test whether the current protocol can talk to the ECU.
  * Uses PID 0100 (supported PIDs) — every OBD-II vehicle must respond to this.
+ * Retries once to handle transient CAN bus collisions.
  * @returns {Promise<boolean>}
  */
 async function probeECU() {
-  try {
-    const resp = await sendSafeCommand('0100', 5000);
-    return !!resp && !isELMError(resp);
-  } catch {
-    return false;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const resp = await sendSafeCommand('0100', 8000);
+      if (resp && !isELMError(resp)) return true;
+    } catch {}
+    if (attempt === 0) await new Promise(r => setTimeout(r, 300));
   }
+  return false;
 }
 
 /**
  * Initialise the ELM327 adapter.
  * Runs the standard init sequence, then verifies ECU communication.
- * If the selected protocol fails, automatically tries common protocols
- * until one responds.
+ * If the selected protocol fails, tries CAN protocols 6-9, then legacy 3-5.
  *
  * @param {string} [protocolCode='0'] - ELM327 protocol code (0-9). '0' = auto-detect.
+ * @param {(status: string) => void} [onProgress] - optional status callback for UI
  * @returns {Promise<{ elmVersion: string, protocol: string, protocolCode: string }>}
  */
-export async function initAdapter(protocolCode = '0') {
+export async function initAdapter(protocolCode = '0', onProgress) {
   // Wake-up poke — send a CR to flush any stale state
   try { await enqueue('\r', 1000); } catch {}
   await new Promise(r => setTimeout(r, 300));
 
   // Double reset — handles cheap v2.1 clones that swallow first ATZ
-  let version = 'Unknown';
   try {
     await enqueue('ATZ', 3000);
     await new Promise(r => setTimeout(r, 500));
@@ -188,40 +191,41 @@ export async function initAdapter(protocolCode = '0') {
     await new Promise(r => setTimeout(r, 1000));
   } catch {}
 
-  // Identify
+  // Configure FIRST (echo off, spaces off, etc.) so subsequent responses parse cleanly
+  for (const cmd of ['ATE0', 'ATL0', 'ATS0', 'ATH0']) {
+    try { await sendSafeCommand(cmd, 3000); } catch {}
+  }
+
+  // NOW identify — echo is off, response is clean
+  let version = 'Unknown';
   try {
-    version = await sendSafeCommand('ATI', 3000);
+    version = await sendSafeCommand('ATI', 5000);
   } catch {}
 
-  // Configure for clean OBD-II communication — each non-fatal so init continues
-  for (const cmd of ['ATE0', 'ATL0', 'ATS0', 'ATH0', `ATSP${protocolCode}`, 'ATS1', 'ATAT2']) {
-    try { await sendSafeCommand(cmd, 3000); } catch (err) {
-      console.warn(`Init command ${cmd} failed:`, err.message);
-    }
+  // Set protocol + adaptive timing
+  for (const cmd of [`ATSP${protocolCode}`, 'ATS1', 'ATAT2']) {
+    try { await sendSafeCommand(cmd, 3000); } catch {}
   }
 
   // Probe ECU with selected protocol
+  onProgress?.('Testing ECU connection...');
   let activeCode = protocolCode;
   let ecuReachable = await probeECU();
 
-  // If auto-detect or selected protocol failed, try each fallback
+  // If auto-detect or selected protocol failed, try CAN protocols then legacy
   if (!ecuReachable) {
-    console.warn(`Protocol ${protocolCode} failed ECU probe — trying fallbacks`);
-    for (const code of PROTOCOL_FALLBACKS) {
-      if (code === protocolCode) continue; // already tried
+    const fallbacks = [...CAN_PROTOCOLS, ...LEGACY_PROTOCOLS].filter(c => c !== protocolCode);
+    for (const code of fallbacks) {
+      onProgress?.(`Trying protocol ${code}...`);
       try {
         await sendSafeCommand(`ATSP${code}`, 3000);
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise(r => setTimeout(r, 500));
         if (await probeECU()) {
           activeCode = code;
           ecuReachable = true;
-          console.log(`Protocol ${code} succeeded`);
           break;
         }
       } catch {}
-    }
-    if (!ecuReachable) {
-      console.warn('All protocol probes failed — ECU may be unreachable (ignition off?)');
     }
   }
 
@@ -235,6 +239,7 @@ export async function initAdapter(protocolCode = '0') {
     elmVersion: version || 'Unknown',
     protocol: protocol || 'Unknown',
     protocolCode: activeCode,
+    ecuReachable,
   };
 }
 

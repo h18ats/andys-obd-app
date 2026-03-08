@@ -296,12 +296,8 @@ export default function App() {
       await connect(device.deviceId, device.name, profile, setConnectStatus);
 
       setConnectStatus('Initialising adapter...');
-      const info = await initAdapter(selectedProtocol);
+      const info = await initAdapter(selectedProtocol, setConnectStatus);
       setAdapterInfo({ ...info, deviceName: device.name });
-      if (info.protocolCode !== selectedProtocol && selectedProtocol === '0') {
-        setConnectStatus(`Found protocol: ${info.protocol}`);
-        await new Promise(r => setTimeout(r, 800));
-      }
       setConnected(true);
       setView(VIEWS.DASHBOARD);
     } catch (err) {
