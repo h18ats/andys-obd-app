@@ -1,5 +1,21 @@
 import React, { Component } from 'react';
 
+// --- Shared keyframes (injected once at app root via <AnimationStyles />) ---
+export function AnimationStyles() {
+  return (
+    <style>{`
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+      @keyframes scanLine {
+        0% { transform: translateX(-10px); opacity: 0; }
+        10% { opacity: 1; }
+        90% { opacity: 1; }
+        100% { transform: translateX(110px); opacity: 0; }
+      }
+    `}</style>
+  );
+}
+
 // --- Theme colours ---
 const COLORS = {
   bg: '#0a0f1a',
@@ -166,12 +182,7 @@ export function Pulse({ color = COLORS.ok, size = 10 }) {
     animation: 'pulse 2s ease-in-out infinite',
   };
 
-  return (
-    <>
-      <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
-      <span style={style} />
-    </>
-  );
+  return <span style={style} />;
 }
 
 // --- ErrorBoundary ---
@@ -291,7 +302,6 @@ export function SignalBars({ rssi }) {
 export function ProgressCard({ steps }) {
   return (
     <Card>
-      <style>{`@keyframes progressSpin { to { transform: rotate(360deg); } }`}</style>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {steps.map((step, i) => {
           const icon = step.status === 'done' ? '✓'
@@ -309,7 +319,7 @@ export function ProgressCard({ steps }) {
                 <span style={{
                   width: '14px', height: '14px', borderRadius: '50%',
                   border: `2px solid ${COLORS.accent}`, borderTopColor: 'transparent',
-                  animation: 'progressSpin 0.8s linear infinite', flexShrink: 0,
+                  animation: 'spin 0.8s linear infinite', flexShrink: 0,
                 }} />
               ) : (
                 <span style={{
@@ -341,14 +351,6 @@ export function ProgressCard({ steps }) {
 export function ScanVisual() {
   return (
     <div style={{ display: 'flex', justifyContent: 'center', padding: '8px 0' }}>
-      <style>{`
-        @keyframes scanLine {
-          0% { transform: translateX(-10px); opacity: 0; }
-          10% { opacity: 1; }
-          90% { opacity: 1; }
-          100% { transform: translateX(110px); opacity: 0; }
-        }
-      `}</style>
       <svg width="120" height="60" viewBox="0 0 120 60" fill="none">
         {/* Car body silhouette */}
         <path

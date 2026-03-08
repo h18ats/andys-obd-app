@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Pulse, ErrorBoundary, COLORS, Badge } from './components/shared.jsx';
+import { Pulse, ErrorBoundary, AnimationStyles, COLORS, Badge } from './components/shared.jsx';
 import { scanForAdapters, connect, disconnect, isConnected } from './obd/ble-transport.js';
 import { initAdapter, queryPIDs, readStoredDTCs, readPendingDTCs, readPermanentDTCs, readVIN, readBatteryVoltage, querySupportedPIDs, readMonitorStatus, readCVMDTCs, clearQueue } from './obd/elm327.js';
 import { ALL_PIDS, PIDS } from './obd/obd-pids.js';
@@ -810,6 +810,7 @@ export default function App() {
   // ==================== RENDER ====================
   return (
     <ErrorBoundary>
+      <AnimationStyles />
       <div style={{
         height: '100%',
         display: 'flex',

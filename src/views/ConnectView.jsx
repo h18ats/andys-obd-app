@@ -125,7 +125,6 @@ export default function ConnectView({ scanning, devices, connecting, connected, 
             <div style={{ width: '16px', height: '16px', border: `2px solid ${COLORS.accent}`, borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
             <p style={{ color: COLORS.accent, fontSize: '13px', margin: 0 }}>{connectStatus}</p>
           </div>
-          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
         </Card>
       )}
 
