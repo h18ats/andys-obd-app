@@ -146,12 +146,31 @@ export async function sendSafeCommand(command, timeoutMs = 5000) {
   return response;
 }
 
+// Protocol codes ordered by likelihood on modern vehicles (CAN first, then legacy)
+const PROTOCOL_FALLBACKS = ['6', '7', '8', '9', '3', '4', '5', '1', '2'];
+
+/**
+ * Test whether the current protocol can talk to the ECU.
+ * Uses PID 0100 (supported PIDs) — every OBD-II vehicle must respond to this.
+ * @returns {Promise<boolean>}
+ */
+async function probeECU() {
+  try {
+    const resp = await sendSafeCommand('0100', 5000);
+    return !!resp && !isELMError(resp);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Initialise the ELM327 adapter.
- * Runs the standard init sequence to configure for the selected OBD protocol.
+ * Runs the standard init sequence, then verifies ECU communication.
+ * If the selected protocol fails, automatically tries common protocols
+ * until one responds.
  *
- * @param {string} [protocolCode='6'] - ELM327 protocol code (0-9). '0' = auto-detect.
- * @returns {Promise<{ elmVersion: string, protocol: string }>}
+ * @param {string} [protocolCode='0'] - ELM327 protocol code (0-9). '0' = auto-detect.
+ * @returns {Promise<{ elmVersion: string, protocol: string, protocolCode: string }>}
  */
 export async function initAdapter(protocolCode = '0') {
   // Wake-up poke — send a CR to flush any stale state
@@ -181,16 +200,41 @@ export async function initAdapter(protocolCode = '0') {
     }
   }
 
-  // Describe the detected protocol — auto-detect (ATSP0) needs longer timeout
+  // Probe ECU with selected protocol
+  let activeCode = protocolCode;
+  let ecuReachable = await probeECU();
+
+  // If auto-detect or selected protocol failed, try each fallback
+  if (!ecuReachable) {
+    console.warn(`Protocol ${protocolCode} failed ECU probe — trying fallbacks`);
+    for (const code of PROTOCOL_FALLBACKS) {
+      if (code === protocolCode) continue; // already tried
+      try {
+        await sendSafeCommand(`ATSP${code}`, 3000);
+        await new Promise(r => setTimeout(r, 300));
+        if (await probeECU()) {
+          activeCode = code;
+          ecuReachable = true;
+          console.log(`Protocol ${code} succeeded`);
+          break;
+        }
+      } catch {}
+    }
+    if (!ecuReachable) {
+      console.warn('All protocol probes failed — ECU may be unreachable (ignition off?)');
+    }
+  }
+
+  // Describe the active protocol
   let protocol = 'Unknown';
   try {
-    const dpTimeout = protocolCode === '0' ? 15000 : 5000;
-    protocol = await sendSafeCommand('ATDP', dpTimeout);
+    protocol = await sendSafeCommand('ATDP', 5000);
   } catch {}
 
   return {
     elmVersion: version || 'Unknown',
     protocol: protocol || 'Unknown',
+    protocolCode: activeCode,
   };
 }
 
