@@ -215,20 +215,13 @@ export async function initAdapter(protocolCode = '0', onProgress) {
   // Clear diagnostic log for this session
   diagLog.length = 0;
 
-  // Wake-up poke — send a CR to flush any stale state
-  try { await enqueue('\r', 1000); } catch {}
-  await new Promise(r => setTimeout(r, 300));
-
-  // Double reset — uses enqueue (no error checking, ATZ response is messy)
+  // Soft reset — ATD (defaults) + ATWS (warm start) instead of ATZ.
+  // ATZ reboots the chip which kills BLE notifications on many adapters.
+  // ATD resets settings, ATWS restarts the interpreter without a full reboot.
   onProgress?.('Resetting adapter...');
-  try {
-    await enqueue('ATZ', 4000);
-    await new Promise(r => setTimeout(r, 500));
-  } catch {}
-  try {
-    await enqueue('ATZ', 4000);
-    await new Promise(r => setTimeout(r, 1000));
-  } catch {}
+  await sendLenientCommand('ATD', 3000);
+  await sendLenientCommand('ATWS', 3000);
+  await new Promise(r => setTimeout(r, 500));
 
   // Configure — use lenient commands (any response = adapter alive, no error gate)
   onProgress?.('Configuring adapter...');
