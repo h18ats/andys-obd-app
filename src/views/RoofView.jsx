@@ -98,6 +98,54 @@ function SwitchGroupCard({ groupKey, switches, switchStates, analogValues, activ
   );
 }
 
+// --- Raw hex explorer for discovered DIDs ---
+function HexExplorer({ did, data }) {
+  if (!data || data.length === 0) return null;
+  const hexStr = data.map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+  return (
+    <div style={{ marginTop: '6px', padding: '8px', borderRadius: '6px', background: '#0f172a' }}>
+      <div style={{ fontSize: '10px', color: COLORS.textMuted, marginBottom: '4px', fontWeight: 600 }}>
+        0x{did.toString(16).toUpperCase().padStart(4, '0')} — {data.length} byte{data.length !== 1 ? 's' : ''}
+      </div>
+      <div style={{ fontSize: '11px', fontFamily: 'monospace', color: COLORS.accent, marginBottom: '6px', letterSpacing: '1px' }}>
+        {hexStr}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+        {data.map((byte, byteIdx) => (
+          <div key={byteIdx} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ fontSize: '9px', color: COLORS.textMuted, fontFamily: 'monospace', width: '28px', textAlign: 'right', flexShrink: 0 }}>
+              [{byteIdx}]
+            </span>
+            <div style={{ display: 'flex', gap: '2px' }}>
+              {[7, 6, 5, 4, 3, 2, 1, 0].map(bit => {
+                const isSet = (byte & (1 << bit)) !== 0;
+                return (
+                  <span
+                    key={bit}
+                    style={{
+                      width: 14, height: 14, borderRadius: 2, display: 'inline-flex',
+                      alignItems: 'center', justifyContent: 'center',
+                      fontSize: '8px', fontFamily: 'monospace', fontWeight: 700,
+                      background: isSet ? `${COLORS.ok}30` : '#1e293b',
+                      color: isSet ? COLORS.ok : COLORS.textMuted,
+                      border: `1px solid ${isSet ? `${COLORS.ok}40` : '#334155'}`,
+                    }}
+                  >
+                    {isSet ? '1' : '0'}
+                  </span>
+                );
+              })}
+            </div>
+            <span style={{ fontSize: '9px', fontFamily: 'monospace', color: COLORS.textDim }}>
+              0x{byte.toString(16).toUpperCase().padStart(2, '0')}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function RoofView({
   vinData, connected, cvmDTCs, readingCVM, cvmScanAttempted, cvmReachable, cvmScanSteps, onScanCVM,
   cvmLiveStatus, cvmMonitoring, cvmProbing, cvmProbeProgress, cvmProbeResults, cvmDiscoveredDids,
@@ -107,6 +155,7 @@ export default function RoofView({
   const [searchResult, setSearchResult] = useState(null);
   const [activeSection, setActiveSection] = useState('lookup'); // lookup | failures | ccid
   const [expandedSwitch, setExpandedSwitch] = useState(null);
+  const [expandedDid, setExpandedDid] = useState(null);
 
   const handleSearch = () => {
     const code = searchCode.trim().toUpperCase();
@@ -306,15 +355,27 @@ export default function RoofView({
             </div>
           )}
 
-          {/* Probe results */}
+          {/* Probe results — tap to expand raw hex explorer */}
           {cvmProbeResults && cvmProbeResults.supported.length > 0 && (
             <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
               {cvmProbeResults.supported.map(d => (
-                <div key={d.did} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 8px', borderRadius: '6px', background: `${COLORS.ok}08` }}>
-                  <span style={{ fontSize: '11px', fontFamily: 'monospace', color: COLORS.ok, fontWeight: 600 }}>
-                    0x{d.did.toString(16).toUpperCase().padStart(4, '0')}
-                  </span>
-                  <span style={{ fontSize: '10px', color: COLORS.textDim }}>{d.name} ({d.data?.length || 0}B)</span>
+                <div key={d.did}>
+                  <div
+                    onClick={() => setExpandedDid(expandedDid === d.did ? null : d.did)}
+                    style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      padding: '4px 8px', borderRadius: '6px', background: `${COLORS.ok}08`,
+                      cursor: 'pointer', userSelect: 'none',
+                    }}
+                  >
+                    <span style={{ fontSize: '11px', fontFamily: 'monospace', color: COLORS.ok, fontWeight: 600 }}>
+                      0x{d.did.toString(16).toUpperCase().padStart(4, '0')}
+                    </span>
+                    <span style={{ fontSize: '10px', color: COLORS.textDim }}>
+                      {d.name} ({d.data?.length || 0}B) {expandedDid === d.did ? '▾' : '▸'}
+                    </span>
+                  </div>
+                  {expandedDid === d.did && <HexExplorer did={d.did} data={d.data} />}
                 </div>
               ))}
             </div>

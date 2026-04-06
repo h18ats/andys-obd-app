@@ -362,7 +362,26 @@ export function parseReadDIDResponse(response, expectedDid) {
     return { ok: false, error: 'No response' };
   }
 
-  const cleaned = response.replace(/[\r\n>]/g, ' ').trim();
+  // Strip ELM327 noise: prompts, echo, SEARCHING, and timeout markers
+  const cleaned = response
+    .replace(/[\r\n>]/g, ' ')
+    .replace(/SEARCHING\.\.\./gi, '')
+    .replace(/\?/g, '')
+    .replace(/BUS INIT:\s*(OK|ERROR)/gi, '')
+    .trim();
+
+  // Detect fatal adapter errors before byte parsing
+  const upperCleaned = cleaned.toUpperCase();
+  if (upperCleaned.includes('BUFFER FULL')) {
+    return { ok: false, error: 'Buffer full — response too long for adapter' };
+  }
+  if (upperCleaned.includes('CAN ERROR')) {
+    return { ok: false, error: 'CAN bus error' };
+  }
+  if (upperCleaned.includes('NO DATA') || upperCleaned === 'UNABLE TO CONNECT') {
+    return { ok: false, error: cleaned };
+  }
+
   const bytes = cleaned.split(/\s+/).filter(b => /^[0-9A-Fa-f]{2}$/.test(b));
 
   if (bytes.length === 0) {
@@ -385,12 +404,20 @@ export function parseReadDIDResponse(response, expectedDid) {
     if (bytes[i].toUpperCase() === '62' &&
         bytes[i + 1].toUpperCase() === didHi &&
         bytes[i + 2].toUpperCase() === didLo) {
-      const dataBytes = bytes.slice(i + 3).map(b => parseInt(b, 16));
+      // Collect data bytes up to the next response marker (62 or 7F) to handle
+      // multi-frame responses where another response follows in the same string
+      const dataBytes = [];
+      for (let j = i + 3; j < bytes.length; j++) {
+        const upper = bytes[j].toUpperCase();
+        // Stop if we hit another positive or negative response header
+        if (upper === '62' || upper === '7F') break;
+        dataBytes.push(parseInt(bytes[j], 16));
+      }
       return { ok: true, data: dataBytes, raw: cleaned };
     }
   }
 
-  return { ok: false, error: `Unexpected response format`, raw: cleaned };
+  return { ok: false, error: 'Unexpected response format', raw: cleaned };
 }
 
 // ---------------------------------------------------------------------------

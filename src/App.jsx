@@ -130,6 +130,7 @@ export default function App() {
   const [liveData, setLiveData] = useState({});
   const [polling, setPolling] = useState(false);
   const pollingRef = useRef(false);
+  const liveDataRef = useRef({});
   const history = useHistory();
 
   // Diagnostics
@@ -159,7 +160,6 @@ export default function App() {
     const active = stored.find(v => v.id === activeId);
     return active?.vinData?.vin ? loadDiscoveredDids(active.vinData.vin) : null;
   });
-  const cvmPollCounter = useRef(0);
   const cvmConsecutiveFailures = useRef(0);
 
   // Vehicle management
@@ -360,53 +360,10 @@ export default function App() {
           : allPids;
         const results = await queryPIDs(pidsToQuery);
         setLiveData(results);
+        liveDataRef.current = results;
         consecutiveFailures = 0;
         for (const [pid, data] of Object.entries(results)) {
           if (data?.value !== undefined) history.push(pid, data.value);
-        }
-        // --- CVM live status interleave (every 3rd PID cycle) ---
-        if (cvmMonitoringRef.current && cvmConsecutiveFailures.current < 3) {
-          cvmPollCounter.current++;
-          // Auto-stop if vehicle is moving (speed PID > 0)
-          const speed = results?.['0D']?.value;
-          if (speed && speed > 0) {
-            cvmMonitoringRef.current = false;
-            setCvmMonitoring(false);
-          } else if (cvmPollCounter.current % 3 === 0) {
-            try {
-              const dids = (cvmDiscoveredDids || []).map(d => d.did);
-              if (dids.length > 0) {
-                const cvmResult = await readCVMStatusBatch(dids);
-                if (cvmResult.reachable) {
-                  cvmConsecutiveFailures.current = 0;
-                  // Decode the first status-category DID for switch states
-                  const statusDid = (cvmDiscoveredDids || []).find(d => d.did >= 0x2000 && d.did <= 0xDFFF);
-                  const didResult = statusDid ? cvmResult.results.get(statusDid.did) : null;
-                  if (didResult?.ok && didResult.data) {
-                    const bitMap = vinData?.vin ? loadBitMap(vinData.vin, statusDid.did) : null;
-                    const decoded = decodeSwitchBitmask(didResult.data, bitMap);
-                    const { phase, confidence } = inferRoofPhase(decoded.switches);
-                    setCvmLiveStatus({
-                      switches: decoded.switches,
-                      unknownBits: decoded.unknownBits,
-                      raw: decoded.raw,
-                      phase: phase ? { ...phase, confidence } : null,
-                      timestamp: Date.now(),
-                    });
-                  }
-                } else {
-                  cvmConsecutiveFailures.current++;
-                }
-              }
-            } catch (err) {
-              cvmConsecutiveFailures.current++;
-              console.warn('CVM poll error:', err.message);
-              if (cvmConsecutiveFailures.current >= 3) {
-                cvmMonitoringRef.current = false;
-                setCvmMonitoring(false);
-              }
-            }
-          }
         }
       } catch (err) {
         consecutiveFailures++;
@@ -542,16 +499,70 @@ export default function App() {
     setCvmProbing(false);
   }, [vinData?.vin]);
 
-  // --- CVM live monitoring ---
-  const startCvmMonitoring = useCallback(() => {
+  // --- CVM live monitoring (standalone loop, independent of PID polling) ---
+  const cvmDiscoveredDidsRef = useRef(cvmDiscoveredDids);
+  cvmDiscoveredDidsRef.current = cvmDiscoveredDids;
+
+  const startCvmMonitoring = useCallback(async () => {
+    if (cvmMonitoringRef.current) return;
+    if (demoRef.current) return; // Demo handled in demo interval
     cvmMonitoringRef.current = true;
     cvmConsecutiveFailures.current = 0;
     setCvmMonitoring(true);
-  }, []);
+
+    while (cvmMonitoringRef.current && isConnected()) {
+      const dids = (cvmDiscoveredDidsRef.current || []).map(d => d.did);
+      if (dids.length === 0) break;
+
+      // Auto-stop if vehicle is moving
+      const speed = liveDataRef.current?.['0D']?.value;
+      if (speed && speed > 0) {
+        console.warn('CVM monitoring stopped — vehicle moving');
+        break;
+      }
+
+      try {
+        const cvmResult = await readCVMStatusBatch(dids);
+        if (cvmResult.reachable) {
+          cvmConsecutiveFailures.current = 0;
+          const statusDid = (cvmDiscoveredDidsRef.current || []).find(d => d.did >= 0x2000 && d.did <= 0xDFFF);
+          const didResult = statusDid ? cvmResult.results.get(statusDid.did) : null;
+          if (didResult?.ok && didResult.data) {
+            const bitMap = vinData?.vin ? loadBitMap(vinData.vin, statusDid.did) : null;
+            const decoded = decodeSwitchBitmask(didResult.data, bitMap);
+            const { phase, confidence } = inferRoofPhase(decoded.switches);
+            setCvmLiveStatus({
+              switches: decoded.switches,
+              unknownBits: decoded.unknownBits,
+              raw: decoded.raw,
+              phase: phase ? { ...phase, confidence } : null,
+              timestamp: Date.now(),
+            });
+          }
+        } else {
+          cvmConsecutiveFailures.current++;
+        }
+      } catch (err) {
+        cvmConsecutiveFailures.current++;
+        console.warn('CVM poll error:', err.message);
+      }
+
+      if (cvmConsecutiveFailures.current >= 3) {
+        console.warn('CVM monitoring stopped — 3 consecutive failures');
+        break;
+      }
+
+      // ~1.5s between CVM reads — don't overload the serial queue
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    cvmMonitoringRef.current = false;
+    setCvmMonitoring(false);
+  }, [vinData?.vin]);
 
   const stopCvmMonitoring = useCallback(() => {
     cvmMonitoringRef.current = false;
-    setCvmMonitoring(false);
+    // State update happens when the while-loop exits
   }, []);
 
   // --- Read vehicle info ---
