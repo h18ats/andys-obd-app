@@ -1,4 +1,4 @@
-const CACHE_NAME = 'andys-obd-v1.1.0';
+const CACHE_NAME = 'andys-obd-v1.0.18';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
