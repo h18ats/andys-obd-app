@@ -41,6 +41,20 @@ export const ROOF_CODES = {
     fix: 'Inspect sensor at rear of roof compartment. Check for water ingress.',
     component: 'Hall Sensor',
   },
+  A68B: {
+    desc: 'Hall sensor — roof shell position (partially open)',
+    severity: ROOF_SEVERITY.WARNING,
+    cause: 'Main pillar angle sensor reading out of range during opening',
+    fix: 'Check main pillar angle hall sensor at right-side bearing. Verify wiring continuity.',
+    component: 'Hall Sensor',
+  },
+  A68C: {
+    desc: 'Hall sensor — roof shell position (partially closed)',
+    severity: ROOF_SEVERITY.WARNING,
+    cause: 'Main pillar angle sensor reading out of range during closing',
+    fix: 'Check main pillar angle hall sensor at right-side bearing. Verify wiring continuity.',
+    component: 'Hall Sensor',
+  },
   A68D: {
     desc: 'Soft top locking system sensor fault',
     severity: ROOF_SEVERITY.CRITICAL,
@@ -54,6 +68,13 @@ export const ROOF_CODES = {
     cause: 'General roof mechanism fault — could be hydraulic, electrical, or mechanical',
     fix: 'Check hydraulic fluid level. Inspect for obstructions. Read sub-codes for specifics.',
     component: 'System',
+  },
+  A68F: {
+    desc: 'Microswitch — cowl panel unlocked confirmation',
+    severity: ROOF_SEVERITY.WARNING,
+    cause: 'Front header latch unlocked-position microswitch (S145-equivalent) failure',
+    fix: 'Check unlocked-detent microswitch in front header bow. Clean contacts or replace.',
+    component: 'Microswitch',
   },
   A690: {
     desc: 'Microswitch — rear-end module closed, LEFT',
@@ -82,6 +103,13 @@ export const ROOF_CODES = {
     cause: 'Secondary confirmation sensor not reading correctly',
     fix: 'Check sensor alignment and wiring continuity.',
     component: 'Position Sensor',
+  },
+  A694: {
+    desc: 'Microswitch — cowl panel reached (intermediate position)',
+    severity: ROOF_SEVERITY.WARNING,
+    cause: 'Header bow intermediate position microswitch not triggering during close cycle',
+    fix: 'Check microswitch at header bow travel limit. Adjust alignment or replace.',
+    component: 'Microswitch',
   },
   A69A: {
     desc: 'Solenoid valve — retractable top hydraulic control',
@@ -190,9 +218,9 @@ export const ROOF_FAILURE_POINTS = [
   },
   {
     component: 'Hall Sensors',
-    codes: ['A689', 'A68A', 'A691'],
+    codes: ['A689', 'A68A', 'A68B', 'A68C', 'A691'],
     frequency: 'Common',
-    description: 'Mounted on hydraulic rams. Detect roof position (erected/stowed). Fail from vibration or water exposure.',
+    description: 'Mounted on hydraulic rams and main pillar bearing. Detect roof position (erected/stowed/angle). Fail from vibration or water exposure.',
   },
   {
     component: 'Hydraulic Pump Seals',
@@ -220,9 +248,9 @@ export const ROOF_FAILURE_POINTS = [
   },
   {
     component: 'Front Header Latches',
-    codes: ['A68D', 'A6A1', 'A6A4'],
+    codes: ['A68D', 'A68F', 'A694', 'A6A1', 'A6A4'],
     frequency: 'Moderate',
-    description: 'Microswitches in front latches fail to confirm locked state. Check for bent pins or worn catches.',
+    description: 'Microswitches in front latches fail to confirm locked/unlocked/reached states. Check for bent pins or worn catches.',
   },
   {
     component: 'CVM Internal Relays',

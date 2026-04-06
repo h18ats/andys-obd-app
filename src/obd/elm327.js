@@ -511,6 +511,152 @@ export async function readCVMDTCs(onProgress) {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// CVM Live Status — UDS ReadDataByIdentifier (0x22)
+// ---------------------------------------------------------------------------
+
+/**
+ * Helper: set ELM327 headers to address the CVM module.
+ * Reuses the same addressing proven by readCVMDTCs.
+ */
+async function enterCVMMode() {
+  await sendSafeCommand('ATH1', 3000);
+  await sendSafeCommand('ATSH 660', 3000);
+  await sendSafeCommand('ATCRA 6E0', 3000);
+}
+
+/**
+ * Helper: restore normal OBD-II mode after CVM communication.
+ * Always called in a finally block — individual failures are swallowed.
+ */
+async function exitCVMMode() {
+  try { await sendSafeCommand('ATH0', 3000); } catch {}
+  try { await sendSafeCommand('ATAR', 3000); } catch {}
+  try { await sendSafeCommand('ATD', 3000); } catch {}
+  try { await sendSafeCommand('ATSP0', 5000); } catch {}
+}
+
+/**
+ * Read a single DID from the CVM module via UDS 0x22.
+ * Used during DID probing to discover which DIDs are supported.
+ *
+ * @param {number} did - 16-bit DID (e.g. 0x2000)
+ * @returns {Promise<{ ok: boolean, data?: number[], raw?: string, nrc?: number, nrcDesc?: string, error?: string }>}
+ */
+export async function readCVMDID(did) {
+  const didHi = ((did >> 8) & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+  const didLo = (did & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+
+  try {
+    await enterCVMMode();
+
+    let response;
+    try {
+      response = await enqueue(`22 ${didHi} ${didLo}`, 5000);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+
+    if (!response || isELMError(response)) {
+      return { ok: false, error: response || 'No response' };
+    }
+
+    // Parse the response using cvm-status parser
+    const { parseReadDIDResponse } = await import('./cvm-status.js');
+    return parseReadDIDResponse(response, did);
+  } finally {
+    await exitCVMMode();
+  }
+}
+
+/**
+ * Probe a list of candidate DIDs to discover CVM capabilities.
+ * Sets CVM headers once, sends all probes, restores once.
+ *
+ * @param {Array<{did: number, name: string}>} candidates - DIDs to probe
+ * @param {function} [onProgress] - Called with (index, total, result) for each probe
+ * @returns {Promise<{ supported: Array<{did: number, name: string, data: number[], raw: string}>, service22: boolean }>}
+ */
+export async function probeCVMDIDs(candidates, onProgress) {
+  const supported = [];
+  let service22 = false;
+
+  try {
+    await enterCVMMode();
+
+    for (let i = 0; i < candidates.length; i++) {
+      const { did, name } = candidates[i];
+      const didHi = ((did >> 8) & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+      const didLo = (did & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+
+      let result = { ok: false, error: 'No response' };
+
+      try {
+        const response = await enqueue(`22 ${didHi} ${didLo}`, 5000);
+        if (response && !isELMError(response)) {
+          const { parseReadDIDResponse } = await import('./cvm-status.js');
+          result = parseReadDIDResponse(response, did);
+        }
+      } catch (err) {
+        result = { ok: false, error: err.message };
+      }
+
+      if (result.ok) {
+        service22 = true;
+        supported.push({ did, name, data: result.data, raw: result.raw });
+      }
+
+      if (onProgress) onProgress(i, candidates.length, { did, name, ...result });
+
+      // Small delay between probes to avoid flooding the CVM
+      await new Promise(r => setTimeout(r, 100));
+    }
+  } finally {
+    await exitCVMMode();
+  }
+
+  return { supported, service22 };
+}
+
+/**
+ * Read multiple DIDs from the CVM in a single session.
+ * Sets CVM headers once, reads all DIDs, restores once.
+ * Used for live monitoring polling.
+ *
+ * @param {number[]} dids - Array of 16-bit DIDs to read
+ * @returns {Promise<{ results: Map<number, {ok: boolean, data?: number[], error?: string}>, reachable: boolean }>}
+ */
+export async function readCVMStatusBatch(dids) {
+  const results = new Map();
+  let reachable = false;
+
+  try {
+    await enterCVMMode();
+
+    for (const did of dids) {
+      const didHi = ((did >> 8) & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+      const didLo = (did & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+
+      try {
+        const response = await enqueue(`22 ${didHi} ${didLo}`, 5000);
+        if (response && !isELMError(response)) {
+          reachable = true;
+          const { parseReadDIDResponse } = await import('./cvm-status.js');
+          results.set(did, parseReadDIDResponse(response, did));
+        } else {
+          results.set(did, { ok: false, error: response || 'No response' });
+        }
+      } catch (err) {
+        results.set(did, { ok: false, error: err.message });
+      }
+    }
+  } finally {
+    await exitCVMMode();
+  }
+
+  return { results, reachable };
+}
+
 /**
  * Drain the command queue (e.g. on disconnect).
  */

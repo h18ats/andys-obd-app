@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Pulse, ErrorBoundary, AnimationStyles, COLORS, Badge } from './components/shared.jsx';
 import { scanForAdapters, connect, disconnect, isConnected, getConnectionInfo } from './obd/ble-transport.js';
-import { initAdapter, queryPIDs, readStoredDTCs, readPendingDTCs, readPermanentDTCs, readVIN, readBatteryVoltage, querySupportedPIDs, readMonitorStatus, readCVMDTCs, clearQueue, getDiagLog } from './obd/elm327.js';
+import { initAdapter, queryPIDs, readStoredDTCs, readPendingDTCs, readPermanentDTCs, readVIN, readBatteryVoltage, querySupportedPIDs, readMonitorStatus, readCVMDTCs, probeCVMDIDs, readCVMStatusBatch, clearQueue, getDiagLog } from './obd/elm327.js';
 import { ALL_PIDS, PIDS } from './obd/obd-pids.js';
 import { ADAPTER_PROFILES, getAllProfiles, loadCustomProfiles, saveCustomProfile, deleteCustomProfile } from './obd/adapter-profiles.js';
+import { CANDIDATE_DIDS, decodeSwitchBitmask, inferRoofPhase, simulateSwitchStates, saveDiscoveredDids, loadDiscoveredDids, loadBitMap } from './obd/cvm-status.js';
 import { decodeVIN } from './obd/vin-decoder.js';
 import { getAllCatalogPIDs } from './obd/pid-catalog.js';
 import useSteppedOperation from './hooks/useSteppedOperation.js';
@@ -143,6 +144,23 @@ export default function App() {
   const [readingCVM, setReadingCVM] = useState(false);
   const [cvmScanAttempted, setCvmScanAttempted] = useState(() => loadState('cvmScanAttempted', false));
   const [cvmReachable, setCvmReachable] = useState(() => loadState('cvmReachable', true));
+
+  // CVM live monitoring
+  const [cvmLiveStatus, setCvmLiveStatus] = useState(null); // { switches, unknownBits, raw, phase, analogValues }
+  const [cvmMonitoring, setCvmMonitoring] = useState(false);
+  const cvmMonitoringRef = useRef(false);
+  const [cvmProbeResults, setCvmProbeResults] = useState(null); // { supported, service22 }
+  const [cvmProbing, setCvmProbing] = useState(false);
+  const [cvmProbeProgress, setCvmProbeProgress] = useState(null); // { index, total, current }
+  const [cvmDiscoveredDids, setCvmDiscoveredDids] = useState(() => {
+    // Try to load previously discovered DIDs for the active vehicle
+    const stored = loadState('vehicles', []);
+    const activeId = loadState('active_vehicle', null);
+    const active = stored.find(v => v.id === activeId);
+    return active?.vinData?.vin ? loadDiscoveredDids(active.vinData.vin) : null;
+  });
+  const cvmPollCounter = useRef(0);
+  const cvmConsecutiveFailures = useRef(0);
 
   // Vehicle management
   const [vehicles, setVehicles] = useState(() => {
@@ -312,7 +330,9 @@ export default function App() {
   // --- Disconnect ---
   const handleDisconnect = useCallback(async () => {
     pollingRef.current = false;
+    cvmMonitoringRef.current = false;
     setPolling(false);
+    setCvmMonitoring(false);
     clearQueue();
     try { await disconnect(); } catch {}
     setConnected(false);
@@ -343,6 +363,50 @@ export default function App() {
         consecutiveFailures = 0;
         for (const [pid, data] of Object.entries(results)) {
           if (data?.value !== undefined) history.push(pid, data.value);
+        }
+        // --- CVM live status interleave (every 3rd PID cycle) ---
+        if (cvmMonitoringRef.current && cvmConsecutiveFailures.current < 3) {
+          cvmPollCounter.current++;
+          // Auto-stop if vehicle is moving (speed PID > 0)
+          const speed = results?.['0D']?.value;
+          if (speed && speed > 0) {
+            cvmMonitoringRef.current = false;
+            setCvmMonitoring(false);
+          } else if (cvmPollCounter.current % 3 === 0) {
+            try {
+              const dids = (cvmDiscoveredDids || []).map(d => d.did);
+              if (dids.length > 0) {
+                const cvmResult = await readCVMStatusBatch(dids);
+                if (cvmResult.reachable) {
+                  cvmConsecutiveFailures.current = 0;
+                  // Decode the first status-category DID for switch states
+                  const statusDid = (cvmDiscoveredDids || []).find(d => d.did >= 0x2000 && d.did <= 0xDFFF);
+                  const didResult = statusDid ? cvmResult.results.get(statusDid.did) : null;
+                  if (didResult?.ok && didResult.data) {
+                    const bitMap = vinData?.vin ? loadBitMap(vinData.vin, statusDid.did) : null;
+                    const decoded = decodeSwitchBitmask(didResult.data, bitMap);
+                    const { phase, confidence } = inferRoofPhase(decoded.switches);
+                    setCvmLiveStatus({
+                      switches: decoded.switches,
+                      unknownBits: decoded.unknownBits,
+                      raw: decoded.raw,
+                      phase: phase ? { ...phase, confidence } : null,
+                      timestamp: Date.now(),
+                    });
+                  }
+                } else {
+                  cvmConsecutiveFailures.current++;
+                }
+              }
+            } catch (err) {
+              cvmConsecutiveFailures.current++;
+              console.warn('CVM poll error:', err.message);
+              if (cvmConsecutiveFailures.current >= 3) {
+                cvmMonitoringRef.current = false;
+                setCvmMonitoring(false);
+              }
+            }
+          }
         }
       } catch (err) {
         consecutiveFailures++;
@@ -449,6 +513,45 @@ export default function App() {
       saveState('cvmReachable', false);
     }
     setReadingCVM(false);
+  }, []);
+
+  // --- Probe CVM DIDs ---
+  const handleProbeCVM = useCallback(async () => {
+    if (demoRef.current) return;
+    setCvmProbing(true);
+    setCvmProbeResults(null);
+    setCvmProbeProgress(null);
+
+    try {
+      const result = await probeCVMDIDs(CANDIDATE_DIDS, (index, total, current) => {
+        setCvmProbeProgress({ index: index + 1, total, current });
+      });
+      setCvmProbeResults(result);
+
+      // Store discovered DIDs for this vehicle
+      if (result.supported.length > 0) {
+        const dids = result.supported.map(d => ({ did: d.did, name: d.name, byteLength: d.data?.length || 0 }));
+        setCvmDiscoveredDids(dids);
+        if (vinData?.vin) saveDiscoveredDids(vinData.vin, dids);
+      }
+    } catch (err) {
+      console.warn('CVM probe error:', err.message);
+      setCvmProbeResults({ supported: [], service22: false, error: err.message });
+    }
+
+    setCvmProbing(false);
+  }, [vinData?.vin]);
+
+  // --- CVM live monitoring ---
+  const startCvmMonitoring = useCallback(() => {
+    cvmMonitoringRef.current = true;
+    cvmConsecutiveFailures.current = 0;
+    setCvmMonitoring(true);
+  }, []);
+
+  const stopCvmMonitoring = useCallback(() => {
+    cvmMonitoringRef.current = false;
+    setCvmMonitoring(false);
   }, []);
 
   // --- Read vehicle info ---
@@ -761,6 +864,16 @@ export default function App() {
       },
     });
 
+    // Mock CVM data — simulate reachable CVM with one active fault
+    setCvmScanAttempted(true);
+    setCvmReachable(true);
+    setCvmDTCs([
+      { code: 'A690', desc: 'Microswitch — rear-end module closed, LEFT', severity: 'warning', cause: 'Left coupling lock microswitch corrosion', fix: 'Access behind upper rear quarter panel trim. Clean or replace microswitch.', component: 'Microswitch', active: true, statusByte: 0x01 },
+    ]);
+    // Simulate discovered DIDs so live monitoring works in demo
+    setCvmDiscoveredDids([{ did: 0x2000, name: 'General status register', byteLength: 2 }]);
+    setCvmProbeResults({ supported: [{ did: 0x2000, name: 'General status register' }], service22: true });
+
     // Start fake polling
     const initialData = generateDemoData(null, activePids);
     setLiveData(initialData);
@@ -769,6 +882,7 @@ export default function App() {
     }
     setPolling(true);
 
+    const demoStartTime = Date.now();
     demoRef.current = setInterval(() => {
       setLiveData(prev => {
         const next = generateDemoData(prev, activePidsRef.current);
@@ -777,6 +891,20 @@ export default function App() {
         }
         return next;
       });
+
+      // Simulate CVM live status if monitoring is active
+      if (cvmMonitoringRef.current) {
+        const elapsed = Date.now() - demoStartTime;
+        const sim = simulateSwitchStates(elapsed);
+        setCvmLiveStatus({
+          switches: sim.switches,
+          unknownBits: {},
+          raw: 'DEMO',
+          phase: sim.phase ? { ...sim.phase, confidence: 0.95 } : null,
+          analogValues: sim.analogValues,
+          timestamp: Date.now(),
+        });
+      }
     }, 600);
   }, [generateDemoData, history, activePids]);
 
@@ -797,6 +925,12 @@ export default function App() {
     setCvmDTCs([]);
     setCvmScanAttempted(false);
     setCvmReachable(true);
+    setCvmLiveStatus(null);
+    setCvmMonitoring(false);
+    cvmMonitoringRef.current = false;
+    setCvmProbeResults(null);
+    setCvmProbing(false);
+    setCvmProbeProgress(null);
     setVehicleReadError(null);
     dtcScan.reset();
     vehicleRead.reset();
@@ -938,6 +1072,16 @@ export default function App() {
               cvmReachable={cvmReachable}
               cvmScanSteps={cvmScan.steps}
               onScanCVM={handleScanCVM}
+              cvmLiveStatus={cvmLiveStatus}
+              cvmMonitoring={cvmMonitoring}
+              cvmProbing={cvmProbing}
+              cvmProbeProgress={cvmProbeProgress}
+              cvmProbeResults={cvmProbeResults}
+              cvmDiscoveredDids={cvmDiscoveredDids}
+              onProbeCVM={handleProbeCVM}
+              onStartMonitoring={startCvmMonitoring}
+              onStopMonitoring={stopCvmMonitoring}
+              isDemo={isDemo}
             />
           )}
           {view === VIEWS.VEHICLE && (

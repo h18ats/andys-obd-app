@@ -16,7 +16,9 @@ const ALLOWED_MODES = new Set([
   '07', // Show pending DTCs
   '09', // Request vehicle information (VIN, calibration IDs)
   '0A', // Show permanent DTCs
+  '10', // UDS DiagnosticSessionControl (blocklist catches non-default sessions)
   '19', // UDS ReadDTCInformation (read-only diagnostic query)
+  '22', // UDS ReadDataByIdentifier (read-only — live sensor/switch status)
 ]);
 
 // --- Whitelist: only these AT command prefixes are allowed ---
