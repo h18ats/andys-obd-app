@@ -2,7 +2,7 @@ const CACHE_NAME = 'andys-obd-v1.1.0';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(['/']))
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(['./']))
   );
   self.skipWaiting();
 });
