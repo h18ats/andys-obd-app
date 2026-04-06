@@ -1,11 +1,112 @@
 import React, { useState } from 'react';
-import { Card, Badge, InfoRow, ProgressCard, COLORS } from '../components/shared.jsx';
+import { Card, Badge, InfoRow, ProgressCard, Pulse, COLORS } from '../components/shared.jsx';
 import { ROOF_CODES, ROOF_CCID_CODES, ROOF_FAILURE_POINTS, lookupRoofCode, lookupCCID } from '../obd/roof-codes.js';
+import { CVM_SWITCHES, SWITCH_GROUP, GROUP_LABELS, getSwitch } from '../obd/cvm-status.js';
 
-export default function RoofView({ vinData, connected, cvmDTCs, readingCVM, cvmScanAttempted, cvmReachable, cvmScanSteps, onScanCVM }) {
+// --- Switch indicator dot ---
+function SwitchDot({ state, hasFault, transitioning }) {
+  if (state === null || state === undefined) {
+    return <span style={{ fontSize: '14px', color: COLORS.textMuted }}>?</span>;
+  }
+  if (hasFault) {
+    return <span style={{ width: 10, height: 10, borderRadius: '50%', background: COLORS.fault, display: 'inline-block', animation: 'pulse 1.5s infinite' }} />;
+  }
+  if (transitioning) {
+    return <span style={{ width: 10, height: 10, borderRadius: '50%', background: COLORS.warn, display: 'inline-block', animation: 'pulse 0.8s infinite' }} />;
+  }
+  return (
+    <span style={{
+      width: 10, height: 10, borderRadius: '50%', display: 'inline-block',
+      background: state ? COLORS.ok : 'transparent',
+      border: state ? 'none' : `2px solid ${COLORS.textMuted}`,
+      boxSizing: 'border-box',
+    }} />
+  );
+}
+
+// --- Switch row ---
+function SwitchRow({ sw, value, activeDTCs, expanded, onToggle }) {
+  const hasFault = sw.faultCode && activeDTCs?.some(d => d.code === sw.faultCode && d.active);
+  const stateLabel = value === null || value === undefined
+    ? 'UNKNOWN'
+    : sw.isAnalog
+      ? `${value}%`
+      : value ? (sw.closedMeaning?.split(' ')[0] || 'CLOSED') : (sw.openMeaning?.split(' ')[0] || 'OPEN');
+
+  return (
+    <div>
+      <div
+        onClick={onToggle}
+        style={{
+          display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 0',
+          cursor: 'pointer', userSelect: 'none',
+        }}
+      >
+        {sw.isAnalog ? (
+          <div style={{ width: 60, height: 8, borderRadius: 4, background: '#1e293b', overflow: 'hidden', flexShrink: 0 }}>
+            <div style={{ width: `${Math.min(100, value || 0)}%`, height: '100%', background: COLORS.accent, borderRadius: 4, transition: 'width 0.3s' }} />
+          </div>
+        ) : (
+          <SwitchDot state={value} hasFault={hasFault} />
+        )}
+        <span style={{ fontSize: '12px', fontWeight: 600, color: COLORS.text, flex: 1 }}>{sw.label}</span>
+        <span style={{ fontSize: '11px', color: value ? COLORS.ok : COLORS.textDim, fontFamily: 'monospace', fontWeight: 600 }}>
+          {stateLabel}
+        </span>
+        {hasFault && (
+          <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: 4, background: `${COLORS.fault}20`, color: COLORS.fault, fontWeight: 700 }}>
+            {sw.faultCode}
+          </span>
+        )}
+      </div>
+      {expanded && (
+        <div style={{ paddingLeft: 18, paddingBottom: 6 }}>
+          <div style={{ fontSize: '10px', color: COLORS.textMuted, lineHeight: 1.4 }}>
+            <div>{sw.location}</div>
+            {!sw.isAnalog && <div>Closed = {sw.closedMeaning} | Open = {sw.openMeaning}</div>}
+            {sw.faultCode && <div>Fault code: {sw.faultCode}</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Switch group card ---
+function SwitchGroupCard({ groupKey, switches, switchStates, analogValues, activeDTCs, expandedId, setExpandedId }) {
+  return (
+    <Card>
+      <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textDim, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+        {GROUP_LABELS[groupKey]}
+      </div>
+      {switches.map(sw => {
+        const value = sw.isAnalog
+          ? (analogValues?.[sw.id === 'pillarAngle' ? 'pillarAngle' : sw.id] ?? null)
+          : (switchStates?.[sw.id] ?? null);
+        return (
+          <SwitchRow
+            key={sw.id}
+            sw={sw}
+            value={value}
+            activeDTCs={activeDTCs}
+            expanded={expandedId === sw.id}
+            onToggle={() => setExpandedId(expandedId === sw.id ? null : sw.id)}
+          />
+        );
+      })}
+    </Card>
+  );
+}
+
+export default function RoofView({
+  vinData, connected, cvmDTCs, readingCVM, cvmScanAttempted, cvmReachable, cvmScanSteps, onScanCVM,
+  cvmLiveStatus, cvmMonitoring, cvmProbing, cvmProbeProgress, cvmProbeResults, cvmDiscoveredDids,
+  onProbeCVM, onStartMonitoring, onStopMonitoring, isDemo,
+}) {
   const [searchCode, setSearchCode] = useState('');
   const [searchResult, setSearchResult] = useState(null);
   const [activeSection, setActiveSection] = useState('lookup'); // lookup | failures | ccid
+  const [expandedSwitch, setExpandedSwitch] = useState(null);
 
   const handleSearch = () => {
     const code = searchCode.trim().toUpperCase();
@@ -29,10 +130,112 @@ export default function RoofView({ vinData, connected, cvmDTCs, readingCVM, cvmS
   const isR57 = vinData?.isR57;
   const severityColor = { info: COLORS.accent, warning: COLORS.warn, critical: COLORS.fault };
   const hasFaults = cvmDTCs && cvmDTCs.length > 0;
+  const canProbe = connected && cvmReachable && cvmScanAttempted && !cvmProbing && !readingCVM;
+  const canMonitor = cvmDiscoveredDids && cvmDiscoveredDids.length > 0 && connected;
+  const staleSec = cvmLiveStatus?.timestamp ? Math.round((Date.now() - cvmLiveStatus.timestamp) / 1000) : null;
+
+  // Group switches for display
+  const switchGroups = {};
+  for (const sw of CVM_SWITCHES) {
+    if (!switchGroups[sw.group]) switchGroups[sw.group] = [];
+    switchGroups[sw.group].push(sw);
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', paddingTop: '8px' }}>
-      {/* R57 detection banner */}
+
+      {/* ========== LIVE SWITCH STATUS ========== */}
+      {(cvmMonitoring || cvmLiveStatus) && (
+        <>
+          <Card style={{ borderColor: `${COLORS.accent}40` }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '14px', fontWeight: 700, color: COLORS.text }}>Roof Switch Status</span>
+                {cvmMonitoring && <Pulse color={COLORS.ok} size={8} />}
+                {cvmMonitoring && <span style={{ fontSize: '10px', color: COLORS.ok, fontWeight: 600 }}>LIVE</span>}
+              </div>
+              {staleSec !== null && (
+                <span style={{ fontSize: '10px', color: staleSec > 5 ? COLORS.warn : COLORS.textMuted }}>
+                  {staleSec > 5 ? `Stale (${staleSec}s ago)` : `${staleSec}s ago`}
+                </span>
+              )}
+            </div>
+
+            {/* Roof phase */}
+            {cvmLiveStatus?.phase && (
+              <div style={{
+                padding: '6px 10px', borderRadius: '8px', marginBottom: '8px',
+                background: `${COLORS.accent}10`, borderLeft: `3px solid ${COLORS.accent}`,
+              }}>
+                <span style={{ fontSize: '11px', color: COLORS.textDim, fontWeight: 600 }}>Phase: </span>
+                <span style={{ fontSize: '12px', color: COLORS.text, fontWeight: 700 }}>
+                  {cvmLiveStatus.phase.label}
+                </span>
+                {cvmLiveStatus.phase.confidence < 0.8 && (
+                  <span style={{ fontSize: '10px', color: COLORS.warn, marginLeft: '6px' }}>
+                    ({Math.round(cvmLiveStatus.phase.confidence * 100)}% match)
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Monitoring controls */}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {!cvmMonitoring ? (
+                <button
+                  onClick={onStartMonitoring}
+                  disabled={!canMonitor}
+                  style={{
+                    flex: 1, padding: '8px', borderRadius: '8px', border: 'none',
+                    background: canMonitor ? COLORS.ok : '#334155', color: '#fff',
+                    fontSize: '12px', fontWeight: 600, cursor: canMonitor ? 'pointer' : 'default',
+                    opacity: canMonitor ? 1 : 0.5,
+                  }}
+                >
+                  Start Monitoring
+                </button>
+              ) : (
+                <button
+                  onClick={onStopMonitoring}
+                  style={{
+                    flex: 1, padding: '8px', borderRadius: '8px', border: 'none',
+                    background: COLORS.fault, color: '#fff',
+                    fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+                  }}
+                >
+                  Stop Monitoring
+                </button>
+              )}
+            </div>
+          </Card>
+
+          {/* Switch groups */}
+          {cvmLiveStatus && Object.entries(switchGroups).map(([groupKey, switches]) => (
+            <SwitchGroupCard
+              key={groupKey}
+              groupKey={groupKey}
+              switches={switches}
+              switchStates={cvmLiveStatus.switches}
+              analogValues={cvmLiveStatus.analogValues}
+              activeDTCs={cvmDTCs}
+              expandedId={expandedSwitch}
+              setExpandedId={setExpandedSwitch}
+            />
+          ))}
+
+          {/* Raw hex display */}
+          {cvmLiveStatus?.raw && cvmLiveStatus.raw !== 'DEMO' && (
+            <Card>
+              <div style={{ fontSize: '10px', color: COLORS.textMuted, fontWeight: 600, marginBottom: '4px' }}>Raw Response</div>
+              <div style={{ fontSize: '11px', fontFamily: 'monospace', color: COLORS.textDim, wordBreak: 'break-all' }}>
+                {cvmLiveStatus.raw}
+              </div>
+            </Card>
+          )}
+        </>
+      )}
+
+      {/* ========== R57 DETECTION BANNER ========== */}
       <Card style={{ borderColor: isR57 ? `${COLORS.ok}40` : `${COLORS.accent}30` }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <span style={{ fontSize: '24px' }}>{isR57 ? '✅' : 'ℹ️'}</span>
@@ -52,11 +255,78 @@ export default function RoofView({ vinData, connected, cvmDTCs, readingCVM, cvmS
         </div>
       </Card>
 
-      {/* Scan button */}
+      {/* ========== CVM PROBE SECTION ========== */}
+      {cvmScanAttempted && cvmReachable && (
+        <Card>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: COLORS.text }}>CVM Live Diagnostics</div>
+              <div style={{ fontSize: '11px', color: COLORS.textDim, marginTop: '2px' }}>
+                {cvmProbeResults
+                  ? cvmProbeResults.service22
+                    ? `${cvmProbeResults.supported.length} status DID${cvmProbeResults.supported.length !== 1 ? 's' : ''} found`
+                    : 'UDS 0x22 not supported by this CVM'
+                  : 'Probe CVM to discover live data capabilities'
+                }
+              </div>
+            </div>
+            <button
+              onClick={onProbeCVM}
+              disabled={!canProbe}
+              style={{
+                padding: '10px 18px', borderRadius: '10px', border: 'none',
+                background: cvmProbing ? `${COLORS.accent}40` : canProbe ? COLORS.accent : '#334155',
+                color: '#fff', fontSize: '13px', fontWeight: 600, cursor: canProbe ? 'pointer' : 'default',
+                opacity: canProbe ? 1 : 0.5, transition: 'all 0.2s',
+              }}
+            >
+              {cvmProbing ? 'Probing...' : cvmProbeResults ? 'Re-probe' : 'Probe CVM'}
+            </button>
+          </div>
+
+          {/* Probe progress */}
+          {cvmProbing && cvmProbeProgress && (
+            <div style={{ marginTop: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: COLORS.textDim, marginBottom: '4px' }}>
+                <span>DID 0x{cvmProbeProgress.current?.did?.toString(16).toUpperCase().padStart(4, '0')}</span>
+                <span>{cvmProbeProgress.index}/{cvmProbeProgress.total}</span>
+              </div>
+              <div style={{ height: 4, borderRadius: 2, background: '#1e293b', overflow: 'hidden' }}>
+                <div style={{
+                  width: `${(cvmProbeProgress.index / cvmProbeProgress.total) * 100}%`,
+                  height: '100%', background: COLORS.accent, borderRadius: 2, transition: 'width 0.2s',
+                }} />
+              </div>
+              <div style={{ fontSize: '10px', color: cvmProbeProgress.current?.ok ? COLORS.ok : COLORS.textMuted, marginTop: '4px' }}>
+                {cvmProbeProgress.current?.ok
+                  ? `Supported! (${cvmProbeProgress.current.data?.length || '?'} bytes)`
+                  : cvmProbeProgress.current?.nrcDesc || cvmProbeProgress.current?.error || 'Not supported'
+                }
+              </div>
+            </div>
+          )}
+
+          {/* Probe results */}
+          {cvmProbeResults && cvmProbeResults.supported.length > 0 && (
+            <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {cvmProbeResults.supported.map(d => (
+                <div key={d.did} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 8px', borderRadius: '6px', background: `${COLORS.ok}08` }}>
+                  <span style={{ fontSize: '11px', fontFamily: 'monospace', color: COLORS.ok, fontWeight: 600 }}>
+                    0x{d.did.toString(16).toUpperCase().padStart(4, '0')}
+                  </span>
+                  <span style={{ fontSize: '10px', color: COLORS.textDim }}>{d.name} ({d.data?.length || 0}B)</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* ========== SCAN BUTTON ========== */}
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
-            <div style={{ fontSize: '13px', fontWeight: 600, color: COLORS.text }}>CVM Active Scan</div>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: COLORS.text }}>CVM Fault Scan</div>
             <div style={{ fontSize: '11px', color: COLORS.textDim, marginTop: '2px' }}>
               Read fault codes directly from the roof module
             </div>

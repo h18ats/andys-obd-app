@@ -12,6 +12,7 @@ import { sendCommand, isConnected, disconnect } from './ble-transport.js';
 import { decodePID, parseResponseBytes, PIDS } from './obd-pids.js';
 import { parseDTCResponse } from './dtc-database.js';
 import { parseCVMResponse } from './roof-codes.js';
+import { parseReadDIDResponse } from './cvm-status.js';
 import { parseVINResponse, decodeVIN } from './vin-decoder.js';
 
 // --- Command queue (serial, one-at-a-time) ---
@@ -562,7 +563,6 @@ export async function readCVMDID(did) {
     }
 
     // Parse the response using cvm-status parser
-    const { parseReadDIDResponse } = await import('./cvm-status.js');
     return parseReadDIDResponse(response, did);
   } finally {
     await exitCVMMode();
@@ -594,7 +594,6 @@ export async function probeCVMDIDs(candidates, onProgress) {
       try {
         const response = await enqueue(`22 ${didHi} ${didLo}`, 5000);
         if (response && !isELMError(response)) {
-          const { parseReadDIDResponse } = await import('./cvm-status.js');
           result = parseReadDIDResponse(response, did);
         }
       } catch (err) {
@@ -641,7 +640,6 @@ export async function readCVMStatusBatch(dids) {
         const response = await enqueue(`22 ${didHi} ${didLo}`, 5000);
         if (response && !isELMError(response)) {
           reachable = true;
-          const { parseReadDIDResponse } = await import('./cvm-status.js');
           results.set(did, parseReadDIDResponse(response, did));
         } else {
           results.set(did, { ok: false, error: response || 'No response' });
