@@ -6,6 +6,57 @@ The app can currently read CVM **fault codes** (UDS `19 02 FF` — ReadDTCInform
 
 When a roof operation stalls, you need to see *right now*: "Which switch is open? Which is closed? Where is the roof stuck?" — not "the CVM logged fault A692 at some point."
 
+## R57 CVM Hardware Architecture (from BMW research)
+
+The R57 shares its CVM architecture with the BMW E88 (1 Series Convertible). The CVM sits on the **K-CAN body bus (100 kbit/s)**, behind the **JBE (Junction Box Electronics) gateway**. The OBD port connects to the D-CAN (500 kbit/s); the JBE bridges diagnostic requests to K-CAN.
+
+### Confirmed Physical Sensors
+
+**Microswitches (digital — open/closed):**
+
+| Switch | BMW Designation | Location | Detects | Fault Code |
+|---|---|---|---|---|
+| Coupling lock LEFT | I01197-type | Behind left rear quarter panel trim | Left coupling ring buckle locked | A690 |
+| Coupling lock RIGHT | I01202-type | Behind right rear quarter panel trim | Right coupling ring buckle locked | A692 |
+| Cowl panel LOCKED | S142 equivalent | Front header bow / windscreen frame | Roof locked to windscreen | A68D, A68E |
+| Cowl panel UNLOCKED | S145 equivalent | Front header bow / windscreen frame | Front latches released | A68F |
+| Parcel shelf | Boot microswitch | Left rear corner of parcel shelf | Shelf positioned for stowing | — |
+| Cowl panel reached | Intermediate | Header bow travel | Intermediate position during close | A694 |
+
+**Hall sensors (analog/digital):**
+
+| Sensor | Location | Detects | Fault Code |
+|---|---|---|---|
+| Roof pack ERECTED | Hydraulic ram (right side) | Roof fully up and closed | A689 |
+| Roof pack STOWED | Rear of roof compartment | Roof fully down in boot | A68A |
+| Main pillar ANGLE | Right main bearing | Angular position (continuous, ~0-180 deg) | A68B, A68C |
+| Tensioning bow angle | Tensioning bow mechanism | Fabric tension state | — |
+| Rear module / comp. lid | Boot partition area | Compartment lid position | A691 |
+
+**The main pillar angle sensor is critical** — the CVM uses it to determine fold-cycle percentage. The compartment floor unlocks at approximately 107 degrees.
+
+### Roof Operation Sequence (switch state transitions)
+
+| Step | Coupling L | Coupling R | Cowl Locked | Cowl Unlocked | Parcel Shelf | Boot Lid |
+|---|---|---|---|---|---|---|
+| Start (closed) | LOCKED | LOCKED | CLOSED | OPEN | CLOSED | CLOSED |
+| Unlatch front | LOCKED | LOCKED | OPEN | CLOSED | CLOSED | CLOSED |
+| Fold beginning | OPEN | OPEN | OPEN | CLOSED | CLOSED | CLOSED |
+| Boot opening | OPEN | OPEN | OPEN | CLOSED | CLOSED | OPEN |
+| Stowing | OPEN | OPEN | OPEN | CLOSED | CLOSED | OPEN |
+| Complete (open) | OPEN | OPEN | OPEN | OPEN | CLOSED | CLOSED |
+
+This table is the **ground truth** for validating live readings — if we see a state combination that shouldn't exist at any step, we know we have a fault or a misread.
+
+### Missing Fault Codes (to add to roof-codes.js)
+
+The current database is missing these intermediate codes discovered in research:
+- **A68B** — Hall sensor, roof shell position (partially open)
+- **A68C** — Hall sensor, roof shell position (partially closed)
+- **A68E** — Microswitch, cowl panel locked (distinct from A68D locking system)
+- **A68F** — Microswitch, cowl panel unlocked
+- **A694** — Microswitch, cowl panel reached (intermediate position)
+
 ## Game Theory & Failure Mode Analysis
 
 Before writing any code, every failure mode must be mapped and a strategy chosen for each.
@@ -14,18 +65,21 @@ Before writing any code, every failure mode must be mapped and a strategy chosen
 
 | # | Failure Mode | Probability | Impact | Mitigation Strategy |
 |---|---|---|---|---|
-| 1 | **Adapter can't reach CVM** — cheap ELM327 clones only support standard OBD-II, not body bus modules | HIGH (~50% of adapters) | Total: no data | **Detect on first attempt, show clear "adapter not compatible" message. Never silently fail.** Fall back to DTC-only mode. |
-| 2 | **UDS 0x22 not supported by CVM** — some R57 firmware versions may not expose ReadDataByIdentifier | LOW (~10%) | Total: no live data | **Probe with a known-safe DID first. If NRC (Negative Response Code) 0x11 (serviceNotSupported), disable live monitoring and explain why.** |
+| 1 | **Adapter can't reach CVM** — BMW uses ISO-TP Extended Addressing (requests on 0x6F1 with target module byte, not simple ATSH). Most cheap ELM327 clones don't support this. The JBE gateway may also reject requests. | HIGH (~50-70% of adapters) | Total: no data | **Detect on first DTC scan attempt (existing code). If CVM reachable=true, the adapter handles BMW addressing — proceed with 0x22. If not, fall back to reference-only mode. Never attempt 0x22 if 0x19 already failed.** |
+| 2 | **UDS 0x22 not supported by CVM** — some firmware may not expose ReadDataByIdentifier, or may require a non-default diagnostic session | LOW (~10%) | No live data | **Probe with a known-safe DID first. If NRC 0x11 (serviceNotSupported), try `10 01` (default session reset) then retry. If still fails, disable live monitoring with explanation.** |
 | 3 | **DID returns unexpected format** — byte count or encoding differs from expected | MEDIUM | Corrupt display | **Validate response length and format before parsing. Show raw hex alongside decoded values for transparency.** |
 | 4 | **BLE latency masks rapid state changes** — switch toggles between polls | MEDIUM | Missed transients | **Log every poll result with timestamp. Show "last changed" indicator. Use fastest safe poll interval (~1s).** |
 | 5 | **Polling CVM while engine PID polling is active** — serial queue contention | CERTAIN | Slower updates | **Interleave CVM reads into the polling loop rather than running a separate loop. One queue, one bus.** |
 | 6 | **CVM goes to sleep** — module may power down if ignition off | MEDIUM | Timeout errors | **Detect NO DATA/timeout, show "CVM sleeping" state, auto-retry when data returns.** |
 | 7 | **Roof is mid-operation** — switches are transitioning rapidly | LOW (manual trigger) | Display flutter | **Add debounce on UI transitions. Show "MOVING" state when multiple switches change within 500ms.** |
 | 8 | **User drives away with monitoring active** — safety concern | MEDIUM | Battery drain, bus noise | **Auto-stop CVM polling when speed > 0 or dashboard polling detects driving.** |
+| 9 | **BMW extended addressing mismatch** — the current ATSH 660 / ATCRA 6E0 is an approximation. Real BMW addressing uses 0x6F1 with module byte in data[0]. Some adapters transparently handle this, others don't. | MEDIUM | Wrong module or no response | **If ATSH 660 works for 0x19, it will work for 0x22 — same addressing, different service. The adapter already proved it can reach the CVM.** |
 
 ### Key Principle: Never Guess, Always Verify
 
 Every DID we attempt to read will be **probed first** with a single read. If the CVM returns a Negative Response Code (NRC), we know exactly what's supported. No guessing, no hardcoded assumptions about firmware versions.
+
+**Critical gate:** UDS 0x22 is only attempted on adapters where `cvmReachable === true` (proven by existing DTC scan). This means the adapter has already demonstrated it can talk to the CVM — we don't introduce a new failure mode, we extend an existing working path.
 
 ## Technical Approach
 
@@ -37,62 +91,64 @@ This is the standard UDS service for reading live data from ECU modules. The CVM
 **Positive response:** `62 [DID_HI] [DID_LO] [DATA...]`
 **Negative response:** `7F 22 [NRC]` (where NRC = error code)
 
-### BMW R57 CVM Architecture — What We're Reading
+### BMW EDIABAS Jobs → UDS Mapping
 
-The R57 CVM monitors these physical inputs:
+BMW's diagnostic tools (ISTA/INPA) use named "jobs" that map to UDS commands. The key CVM jobs are:
 
-| Switch/Sensor | Physical Location | What It Detects | Expected DID Category |
-|---|---|---|---|
-| **Coupling lock microswitch LEFT** | Behind left rear quarter panel | Left tonneau cover coupling locked/unlocked | Digital input (1 bit) |
-| **Coupling lock microswitch RIGHT** | Behind right rear quarter panel | Right tonneau cover coupling locked/unlocked | Digital input (1 bit) |
-| **Front header latch LEFT** | Windscreen frame, left | Roof locked to windscreen left | Digital input (1 bit) |
-| **Front header latch RIGHT** | Windscreen frame, right | Roof locked to windscreen right | Digital input (1 bit) |
-| **Hall sensor — erected position** | Hydraulic ram | Roof pack fully up (erected) | Digital/analog |
-| **Hall sensor — stowed position** | Rear compartment | Roof pack fully stowed | Digital/analog |
-| **Hall sensor — rear module open** | Rear module hinge | Compartment lid open | Digital/analog |
-| **Compartment lid locked** | Boot area | Tonneau cover secured | Digital input (1 bit) |
-| **Hydraulic pump motor** | Behind rear seats | Pump running/stopped | Status bit |
-| **Roof position (computed)** | CVM internal | Overall: Closed / Open / Moving / Error | Status register |
+| EDIABAS Job | UDS Service | What It Returns |
+|---|---|---|
+| `STATUS_LESEN` | 0x22 (ReadDataByID) | Aggregate status of all microswitches and hall sensors |
+| `STATUS_HALLSENSOREN` | 0x22 (ReadDataByID) | Individual hall sensor states + angle values |
+| `STATUS_MIKROSCHALTER` | 0x22 (ReadDataByID) | Individual microswitch states |
+| `IDENTIFIKATION` | 0x22 (ReadDataByID) | Module hardware/software version, part number |
+| `FS_LESEN` | 0x19 (ReadDTCInfo) | Stored fault codes (already implemented) |
+
+The exact DID numbers are embedded in BMW's SGBD files (e.g. `D_CVM.PRG`) which are proprietary. Third-party scanners like Foxwell NT510 Elite read and display: microswitch states (Closed/Not Closed), coupling lock states (Locked/Unlocked), roof position, and hall sensor readings — confirming these DIDs exist and are readable.
 
 ### DID Discovery Strategy
 
-BMW CVM DIDs follow patterns established across the E-generation platform (R56/R57 share the E-generation CVM with E93/E88):
+BMW CVM DIDs follow patterns from the E-generation platform. The exact addresses are proprietary, so we must **probe and discover**.
 
-**Phase 1 — Probe known BMW CVM status DIDs:**
+**Phase 1 — Probe high-likelihood BMW DID ranges:**
 
-We will attempt a systematic probe of candidate DIDs. The approach is:
-
-1. **Status register DID (0x2000-0x20FF range)** — BMW modules commonly expose a "status overview" DID that packs all digital inputs into a bitmask
-2. **Individual sensor DIDs (0xD000-0xDFFF range)** — BMW ISTA uses this range for component-level status
-3. **IO status DID (0x3000-0x30FF range)** — Digital input/output status registers
+BMW modules use manufacturer-specific DID ranges:
+- **0xF100-0xF1FF**: ECU identification (part number, HW/SW versions)
+- **0xD000-0xD0FF**: Dynamic sensor data (ISTA-style component status)
+- **0x2000-0x20FF**: Status registers (digital input bitmasks)
+- **0x3000-0x30FF**: IO status registers
 
 **Concrete probe sequence (ordered by likelihood):**
 
 ```
-22 20 00  — General status register (very common across BMW modules)
+22 F1 00  — ECU identification (confirms 0x22 works at all)
+22 20 00  — General status register (digital inputs packed as bitmask)
 22 20 01  — Extended status register
 22 20 10  — Digital input status word
-22 D0 00  — Component status block (ISTA-style)
+22 D0 00  — Component status block (ISTA STATUS_LESEN style)
 22 D0 01  — Component status block 2
+22 D0 10  — Hall sensor status block (STATUS_HALLSENSOREN)
+22 D0 20  — Microswitch status block (STATUS_MIKROSCHALTER)
 22 30 00  — IO status register
-22 00 01  — Module identification (confirms UDS 0x22 support)
 ```
 
-Each probe: send command, check for `62 XX XX` (positive) vs `7F 22 XX` (negative). Map supported DIDs. Parse response byte layouts.
+Each probe: send command, check for `62 XX XX [DATA]` (positive) vs `7F 22 [NRC]` (negative). Record byte lengths and raw data.
 
-**Phase 2 — If standard DIDs fail, brute-force scan a narrow range:**
+**Phase 2 — Targeted range scan if Phase 1 finds 0x22 support:**
 
-If Phase 1 finds that 0x22 is supported (we get at least one positive response) but none of our candidate DIDs return switch status, we scan:
-- `0x2000–0x20FF` (256 DIDs, ~4 minutes at 1/second)
-- Report all responding DIDs with raw hex data for analysis
+If Phase 1 confirms 0x22 is supported (at least one positive response) but we haven't found switch status DIDs, systematically scan:
+- `0x2000–0x203F` (64 DIDs, ~1 minute) — most likely status range
+- `0xD000–0xD03F` (64 DIDs, ~1 minute) — ISTA dynamic data range
+- Report all responding DIDs with raw hex for analysis
 
-**Phase 3 — Interpret response data:**
+**Phase 3 — Interpret and map response data:**
 
-Once we find the status DID(s), we decode the bitmask. BMW typically packs digital inputs as:
+Once status DID(s) are found, decode the bitmask. BMW typically packs digital inputs as:
 - Bit = 0: switch OPEN (circuit broken)
 - Bit = 1: switch CLOSED (circuit made)
 
-The bit-to-switch mapping will be documented from testing and community data, with an "unknown bits" display for any bits we can't yet identify.
+The bit-to-switch mapping uses two strategies:
+1. **Known mappings** from community research and cross-referencing with the operation sequence table above
+2. **Manual calibration mode** — user operates a specific switch, we diff the before/after bytes to identify which bit changed. This is the ultimate fallback and produces verified mappings.
 
 ## Implementation Plan
 
@@ -102,38 +158,60 @@ The bit-to-switch mapping will be documented from testing and community data, wi
 
 Add `'22'` to `ALLOWED_MODES`. This is a **read-only** UDS service (ReadDataByIdentifier) — it cannot modify anything. It's the same safety class as `'19'` which is already whitelisted.
 
-Also add `'10'` (DiagnosticSessionControl) for `10 01` only (default session) — needed because some CVM firmware requires an explicit session start. The blocklist already catches non-default sessions (`/^10\s*0[^1]/i`), so `10 01` is safe.
+Also add `'10'` (DiagnosticSessionControl) for `10 01` only (default session) — some CVM firmware requires an explicit session reset before accepting 0x22 requests. The blocklist already catches non-default sessions (`/^10\s*0[^1]/i`), so `10 01` (return to default session) is safe.
+
+**Safety analysis:** UDS 0x22 is universally read-only across all ECU implementations (ISO 14229-1 §11.3). It cannot write data, clear faults, actuate components, or modify calibration. It is blocked by the ECU itself if security access (0x27) would be required. Adding it is strictly equivalent to adding another "read" command.
 
 ### Step 2: Create CVM status module — `src/obd/cvm-status.js`
 
 New file containing:
 
-- **`CVM_DIDS`** — Map of candidate DIDs with metadata (name, expected byte length, decoder function)
-- **`probeCVMCapabilities()`** — Sends each candidate DID, returns which are supported
-- **`readCVMStatus(supportedDids)`** — Reads all supported status DIDs in one pass, returns decoded switch states
-- **`parseSwitchBitmask(bytes)`** — Decodes the status bitmask into named switch states
-- **`CVM_SWITCHES`** — Constant defining all known switches with:
+- **`CVM_SWITCHES`** — Constant defining all known switches/sensors with:
   - `id`: machine name (e.g. `'couplingLockLeft'`)
   - `label`: human name (e.g. `'Coupling Lock LEFT'`)
   - `location`: physical location description
   - `faultCode`: associated DTC (e.g. `'A690'`)
-  - `bitIndex`: position in status bitmask (null until discovered)
-  - `expectedState`: what "normal" looks like for roof-closed and roof-open
+  - `group`: which UI section ('frontHeader', 'roofPack', 'rearModule', 'hydraulic')
+  - `type`: 'microswitch' or 'hallSensor'
+  - `closedMeaning`: what CLOSED means for this switch (e.g. 'Roof locked to windscreen')
+  - `openMeaning`: what OPEN means (e.g. 'Latch released')
+  - `expectedWhenClosed`: expected state when roof is closed (true/false)
+  - `expectedWhenOpen`: expected state when roof is open (true/false)
 
-### Step 3: Create DID probe function in elm327.js
+- **`CANDIDATE_DIDS`** — Ordered list of DIDs to probe, with metadata (name, expected category, byte length hint)
+- **`probeCVMCapabilities(readFn)`** — Probes each candidate DID via provided read function, returns `{ supported: Map<did, {bytes, raw}>, service22Available: boolean }`
+- **`parseCVMStatusResponse(did, bytes)`** — Attempts to decode a DID response into named switch states. Returns `{ switches: Map<switchId, boolean|number>, raw: string, confidence: 'known'|'inferred'|'raw' }`
+- **`ROOF_STATES`** — Expected switch state combinations for each phase of the roof operation sequence (the table above). Used for validation: "this combination of states means the roof is in phase X"
+- **`inferRoofPhase(switchStates)`** — Given current switch states, returns the most likely roof operation phase by matching against ROOF_STATES
+- **`diffSwitchStates(before, after)`** — Returns which switches changed between two readings (for manual calibration mode)
+
+### Step 3: Add CVM DID reading functions to elm327.js
 
 **File:** `src/obd/elm327.js`
 
-Add `readCVMDID(did)` function:
+Add `readCVMDID(did)` — single DID read, used during probing:
 ```
-1. ATSH 660       — address CVM
+1. ATSH 660       — address CVM (reuses existing proven addressing)
 2. ATCRA 6E0      — filter CVM responses
 3. 22 [HI] [LO]   — ReadDataByIdentifier
-4. Parse response: 62 [HI] [LO] [DATA...] = success, 7F 22 [NRC] = not supported
+4. Parse response:
+   - "62 [HI] [LO] [DATA...]" = success → return { data: bytes, raw: hex }
+   - "7F 22 [NRC]" = negative response → return { error: NRC, errorDesc: '...' }
+   - NO DATA / CAN ERROR → return { error: 'unreachable' }
 5. Restore normal OBD mode
 ```
 
-Add `readCVMStatusLive(dids)` — optimised batch version that sets CVM headers once, reads multiple DIDs, then restores. This minimises header-switching overhead during polling.
+Add `readCVMStatusBatch(dids)` — optimised batch version that sets CVM headers **once**, reads multiple DIDs sequentially, then restores. This minimises header-switching overhead during polling. Critical for live monitoring where we may read 2-3 DIDs per cycle.
+
+```
+1. ATSH 660 + ATCRA 6E0    — set headers once
+2. For each DID:
+   a. 22 [HI] [LO]         — read DID
+   b. Parse response        — accumulate results
+3. ATH0 + ATAR + ATD + ATSP0  — restore OBD mode once
+```
+
+**Key design decision:** Reuse the exact same addressing (ATSH 660 / ATCRA 6E0) that already works for DTC scanning. If an adapter can reach the CVM for `19 02 FF`, it can reach it for `22 XX XX`. This is the same CAN ID, same module, different UDS service.
 
 ### Step 4: Integrate CVM polling into App.jsx polling loop
 
@@ -154,7 +232,7 @@ Modify the existing polling loop (lines 325-369) to optionally interleave CVM st
 
 ### Step 5: Build the Switch Status UI component
 
-**File:** `src/views/RoofView.jsx` — extend with new "Live Status" section
+**File:** `src/views/RoofView.jsx` — extend with new "Live Status" section at the top of the page (above existing DTC scan)
 
 **Visual design — the "Switch Map":**
 
@@ -163,48 +241,71 @@ Modify the existing polling loop (lines 325-369) to optionally interleave CVM st
 │  ROOF SWITCH STATUS          ● LIVE     │
 │  Last updated: 2s ago                   │
 │                                         │
+│  Roof Phase: CLOSED (all latched)       │
+│                                         │
 │  ┌─ FRONT HEADER ─────────────────┐    │
-│  │  LEFT LATCH    ● CLOSED        │    │
-│  │  RIGHT LATCH   ● CLOSED        │    │
+│  │  Cowl Locked    ● CLOSED        │    │
+│  │  Cowl Unlocked  ○ OPEN          │    │
+│  │  Cowl Reached   ● YES           │    │
 │  └────────────────────────────────┘    │
 │                                         │
 │  ┌─ ROOF PACK ────────────────────┐    │
-│  │  ERECTED HALL   ● ACTIVE       │    │
-│  │  STOWED HALL    ○ INACTIVE     │    │
-│  │  POSITION       CLOSED (UP)    │    │
+│  │  Erected Hall   ● ACTIVE        │    │
+│  │  Stowed Hall    ○ INACTIVE      │    │
+│  │  Pillar Angle   ▓▓▓░░ 67%      │    │  ← bar for analog sensor
+│  │  Tension Bow    ▓▓▓▓░ 85%      │    │
 │  └────────────────────────────────┘    │
 │                                         │
 │  ┌─ REAR MODULE ──────────────────┐    │
-│  │  COUPLING LEFT  ● LOCKED       │    │
-│  │  COUPLING RIGHT ● LOCKED       │    │
-│  │  REAR OPEN HALL ○ INACTIVE     │    │
-│  │  COMP. LID      ● LOCKED       │    │
+│  │  Coupling LEFT  ● LOCKED   ⚠A690│   │  ← fault badge if DTC active
+│  │  Coupling RIGHT ● LOCKED       │    │
+│  │  Rear Open Hall ○ INACTIVE     │    │
+│  │  Parcel Shelf   ● CLOSED       │    │
 │  └────────────────────────────────┘    │
 │                                         │
 │  ┌─ HYDRAULIC ────────────────────┐    │
-│  │  PUMP MOTOR     ○ OFF          │    │
+│  │  Pump Motor     ○ OFF          │    │
 │  └────────────────────────────────┘    │
 │                                         │
 │  [Start Monitoring]  [Stop]             │
+│                                         │
+│  Raw: 62 D0 00 3F 82 01 A0 ...        │  ← always show raw hex
 └─────────────────────────────────────────┘
 ```
 
-Each switch shows:
-- **Name** with physical location hint (tap to expand details)
-- **State indicator**: Green filled dot = CLOSED/ACTIVE, Grey hollow dot = OPEN/INACTIVE, Red pulsing dot = FAULT (associated DTC is active), Amber animated dot = TRANSITIONING
-- **Freshness**: "last changed" timestamp per switch
-- **Associated fault code**: if DTC A690/A692/etc is stored, show warning badge next to the switch
+**Switch indicator states (5 possible):**
+| Visual | Meaning | When |
+|---|---|---|
+| Green filled dot (●) | CLOSED / ACTIVE / LOCKED | Switch is making contact |
+| Grey hollow dot (○) | OPEN / INACTIVE / UNLOCKED | Switch is not making contact |
+| Red pulsing dot (●) | FAULT — switch has active DTC | Associated fault code is in the active DTC list |
+| Amber animated dot | TRANSITIONING | Value changed in last 500ms |
+| Grey question mark (?) | UNKNOWN | Read failed or data ambiguous — never fake a state |
+
+**Roof Phase indicator** at the top uses `inferRoofPhase()` to show the overall state:
+- "CLOSED (all latched)" / "OPENING — step 3: fold beginning" / "OPEN (stowed)" / "ERROR — unexpected state combination"
+
+**Each switch row is tappable** — expands to show:
+- Physical location description
+- Associated fault code and its status
+- Last state change timestamp
+- "Normally X when roof closed, Y when roof open"
 
 ### Step 6: DID Discovery/Probe UI
 
 **File:** `src/views/RoofView.jsx` — add "Probe CVM" section
 
-For first-time use or when DIDs are unknown:
+This is the first-run experience and also available for re-probing:
 
-1. "Probe CVM Capabilities" button — runs the probe sequence
-2. Shows progress: "Probing DID 0x2000... supported! (4 bytes)" / "DID 0x2001... not supported (NRC 0x31)"
-3. Stores discovered DIDs in localStorage per vehicle
-4. Once probe completes, automatically enables the Live Status section
+1. **Gate check:** Only enabled if `cvmReachable === true` (adapter already proved it can talk to CVM via DTC scan)
+2. "Probe CVM Capabilities" button — runs the probe sequence
+3. Shows progress: "Probing DID 0xF100... supported! (12 bytes)" / "DID 0x2000... not supported (NRC 0x31)"
+4. Stores discovered DIDs + their byte lengths in localStorage keyed by vehicle VIN
+5. Once probe completes:
+   - If status DIDs found → enable "Start Monitoring" button
+   - If no status DIDs found but 0x22 works → offer "Extended Scan" (Phase 2 range scan)
+   - If 0x22 not supported at all → show explanation, keep DTC-only mode
+6. **Manual calibration mode** (advanced): "Press a switch and tap 'Capture' to identify which bit changed" — reads a DID, waits for user action, reads again, diffs the bytes
 
 ### Step 7: Demo mode support
 
@@ -257,8 +358,24 @@ Extend demo mode to simulate:
 
 ## Risk Assessment
 
-**Highest risk:** DID discovery. We don't have a guaranteed list of which DIDs the R57 CVM exposes. The probe approach mitigates this — worst case, we find 0x22 is supported but can't find the right DIDs, and we fall back to periodic DTC reads (0x19) which still tell us *which* switches have faulted, just not their current state.
+**Highest risk: DID discovery.** We don't have a published list of which DIDs the R57 CVM exposes — BMW keeps this proprietary in SGBD files. The probe approach mitigates this entirely:
+- Best case: we find the status DIDs on first probe and get live switch states immediately
+- Middle case: we find 0x22 is supported but need the extended range scan to locate the right DIDs
+- Worst case: 0x22 is not supported — we fall back to periodic DTC reads (0x19) which still tell us *which* switches have faulted, plus the reference database
 
-**Mitigation for DID uncertainty:** The probe UI shows raw hex for every responding DID. Even if we can't auto-decode the bitmask, a user can manually operate each switch and observe which bytes change — effectively a manual calibration mode. This data can then be shared to improve the mapping over time.
+**Mitigation for DID uncertainty:** The manual calibration mode is the ultimate fallback. User operates a switch, we diff the bytes, we identify the bit. This produces verified mappings that can be shared to the community and hardcoded in future versions.
 
-**Lowest risk:** Everything in the ELM327/BLE transport layer is proven (CVM communication already works for DTCs). We're using the exact same addressing (0x660/0x6E0) with a different UDS service (0x22 instead of 0x19).
+**Medium risk: Adapter compatibility.** ~50-70% of cheap ELM327 BLE clones cannot reach the CVM at all. But this is already a known limitation — the existing DTC scan (`19 02 FF`) faces the same issue. We never attempt 0x22 unless 0x19 already succeeded, so we don't introduce new failures.
+
+**Lowest risk: Transport layer.** Everything in the ELM327/BLE stack is proven. CVM communication already works for DTCs using the exact same addressing (ATSH 660 / ATCRA 6E0). We're sending a different UDS service byte (0x22 vs 0x19) over the same path.
+
+## Research Sources
+
+- [R57 convertible top problems guide — mini2.com](https://www.mini2.com/threads/my-complete-guide-to-the-convertible-top-problems.299769/)
+- [R57 convertible electrical drawings — mini2.com](https://www.mini2.com/threads/convertible-electrical-drawing-for-switches-relays-cvm.370128/)
+- [Roof micro switches and hall sensors — z4-forum.com](https://z4-forum.com/forum/viewtopic.php?t=95385)
+- [BMW CVM Training Document (E46) — Internet Archive](https://ia800902.us.archive.org/26/items/BMWTechnicalTrainingDocuments/ST034%20E46%20Complete%20Vehicle/5%20CVM%20and%20Convertible%20Top.pdf)
+- [BMW E93 Complete Vehicle Workbook (ST701) — Internet Archive](https://ia600902.us.archive.org/26/items/BMWTechnicalTrainingDocuments/ST701%20E93%20Complete%20Vehicle%20Workbook/ST701%2520E93%2520Complete%2520Vehicle_WB_web.pdf)
+- [Deep OBD / ediabaslib — GitHub](https://github.com/uholeschak/ediabaslib)
+- [BMW F-Series diagnostic addressing — Project Gus](https://www.projectgus.com/2022/06/bmw-f-series-gear-selector-part-two-breakthrough/)
+- [SmartTOP for BMW E88/MINI R57 — mods4cars](https://www.mods4cars.com/sms/db/smarttop/ext/support/manuals/bmw/STLFBW4/install_1er/en.php)
