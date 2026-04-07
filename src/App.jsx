@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Pulse, ErrorBoundary, AnimationStyles, COLORS, Badge } from './components/shared.jsx';
 import { scanForAdapters, connect, disconnect, isConnected, getConnectionInfo } from './obd/ble-transport.js';
-import { initAdapter, queryPIDs, readStoredDTCs, readPendingDTCs, readPermanentDTCs, readVIN, readBatteryVoltage, querySupportedPIDs, readMonitorStatus, readCVMDTCs, probeCVMDIDs, readCVMStatusBatch, clearQueue, getDiagLog } from './obd/elm327.js';
+import { initAdapter, queryPIDs, readStoredDTCs, readPendingDTCs, readPermanentDTCs, readVIN, readBatteryVoltage, querySupportedPIDs, readMonitorStatus, readCVMDTCs, probeCVMDIDs, readCVMStatusBatch, clearQueue, getDiagLog, setCVMAddressingScheme } from './obd/elm327.js';
 import { ALL_PIDS, PIDS } from './obd/obd-pids.js';
 import { ADAPTER_PROFILES, getAllProfiles, loadCustomProfiles, saveCustomProfile, deleteCustomProfile } from './obd/adapter-profiles.js';
 import { CANDIDATE_DIDS, decodeSwitchBitmask, inferRoofPhase, simulateSwitchStates, saveDiscoveredDids, loadDiscoveredDids, loadBitMap } from './obd/cvm-status.js';
@@ -461,6 +461,10 @@ export default function App() {
       saveState('cvmDTCs', result.dtcs);
       saveState('cvmScanAttempted', true);
       saveState('cvmReachable', result.reachable);
+      // Remember which addressing scheme worked for subsequent DID reads
+      if (result.addressingScheme) {
+        setCVMAddressingScheme(result.addressingScheme);
+      }
     } catch (err) {
       console.warn('CVM scan error:', err.message);
       cvmScan.failCurrent();

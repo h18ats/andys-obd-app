@@ -144,11 +144,41 @@ export function decodePID(pid, dataBytes) {
 
 /**
  * Parse a hex response string into data bytes.
- * Strips the mode+pid echo (first 2 bytes in the response).
+ * Strips the mode+pid echo and returns only data bytes.
  * E.g. "41 0C 1A F8" → [0x1A, 0xF8]
+ *
+ * Handles:
+ * - Spaced format: "41 0C 1A F8"
+ * - Unspaced format: "410C1AF8" (adapter ignored ATS1)
+ * - CAN headers present: "7E8 03 41 0C 1A F8" (ATH0 ignored)
+ * - Multiline: searches ALL lines for mode response (handles unstripped echo)
+ * - Echo leakage: skips lines that don't contain the mode+1 response byte
  */
 export function parseResponseBytes(response) {
-  const parts = response.trim().split(/\s+/);
-  // Skip first two parts (echo of mode + pid)
+  const lines = response.trim().split('\n').map(l => l.trim()).filter(Boolean);
+
+  // Search ALL lines for one containing the mode response (0x41 for mode 01)
+  // This handles cases where echo wasn't stripped and sits on line 0
+  for (const line of lines) {
+    let parts = line.split(/\s+/);
+
+    // If we got a single chunk with no spaces, split into 2-char hex pairs
+    if (parts.length === 1 && parts[0].length >= 4 && /^[0-9A-Fa-f]+$/.test(parts[0])) {
+      parts = parts[0].match(/.{1,2}/g) || [];
+    }
+
+    // Find the mode response byte (0x41) and extract data after mode+PID echo
+    const modeIdx = parts.findIndex(p => p.toUpperCase() === '41');
+    if (modeIdx >= 0 && modeIdx + 1 < parts.length) {
+      return parts.slice(modeIdx + 2).map((hex) => parseInt(hex, 16)).filter((n) => !isNaN(n));
+    }
+  }
+
+  // Last resort: take first line, skip first two parts
+  const firstLine = lines[0] || '';
+  let parts = firstLine.split(/\s+/);
+  if (parts.length === 1 && parts[0].length >= 4 && /^[0-9A-Fa-f]+$/.test(parts[0])) {
+    parts = parts[0].match(/.{1,2}/g) || [];
+  }
   return parts.slice(2).map((hex) => parseInt(hex, 16)).filter((n) => !isNaN(n));
 }

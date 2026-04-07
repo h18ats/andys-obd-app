@@ -42,6 +42,10 @@ const ALLOWED_AT_PREFIXES = [
   'ATAR',  // Auto-set receive address — restores normal rx filtering
   'ATAT',  // Adaptive timing control — configures ECU response wait times
   'ATTP',  // Try protocol without persisting — non-destructive protocol test
+  'ATCFC', // CAN flow control on/off — required for ISO-TP multi-frame responses
+  'ATFCSH', // Flow control set header — sets CAN ID for flow control frames
+  'ATFCSD', // Flow control set data — sets flow control response bytes (e.g. 30 00 00)
+  'ATFCSM', // Flow control set mode — 0=auto, 1=user-defined headers+data
 ];
 
 // --- Blocklist: these are ALWAYS rejected, even if they somehow pass the whitelist ---

@@ -76,15 +76,17 @@ async function sendLenientCommand(command, timeoutMs = 3000) {
 function cleanResponse(raw, sentCommand) {
   if (!raw) return raw;
   const lines = raw.split('\n');
-  const cmdUpper = sentCommand ? sentCommand.trim().toUpperCase() : '';
+  // Normalise command for echo comparison: strip spaces so "010C" matches "01 0C"
+  const cmdNorm = sentCommand ? sentCommand.trim().toUpperCase().replace(/\s+/g, '') : '';
   const cleaned = lines.filter(line => {
     const trimmed = line.trim().toUpperCase();
     if (!trimmed) return false;                          // blank lines
     if (trimmed.startsWith('SEARCHING')) return false;   // SEARCHING...
     if (trimmed.startsWith('BUS INIT')) return false;    // BUS INIT: ...
     if (/^\xFF+$/.test(line.trim())) return false;       // 0xFF garbage
-    // Strip echo of sent command (clones ignore ATE0)
-    if (cmdUpper && trimmed === cmdUpper) return false;
+    // Strip echo of sent command — compare with spaces stripped so
+    // "010C" matches echo "01 0C" (adapters may format echo differently)
+    if (cmdNorm && trimmed.replace(/\s+/g, '') === cmdNorm) return false;
     return true;
   });
   return cleaned.join('\n').trim();
@@ -212,6 +214,32 @@ async function probeECU() {
  * @param {(status: string) => void} [onProgress] - optional status callback for UI
  * @returns {Promise<{ elmVersion: string, protocol: string, protocolCode: string }>}
  */
+/**
+ * Send an AT config command and verify it was accepted.
+ * Returns true if the adapter responded with 'OK' (or version string for ATI).
+ * Retries once on failure. Logs all results to diag log.
+ */
+async function sendVerifiedAT(command, timeoutMs = 3000) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const resp = await sendLenientCommand(command, timeoutMs);
+    const upper = (resp || '').toUpperCase().trim();
+
+    // AT commands respond with 'OK', ATI responds with version string,
+    // ATDP responds with protocol name — all are non-empty non-error
+    if (upper && upper !== '?' && !upper.includes('ERROR')) {
+      return resp;
+    }
+
+    // Retry after brief pause — adapter may have been busy
+    if (attempt === 0) {
+      await new Promise(r => setTimeout(r, 300));
+    }
+  }
+
+  console.warn(`AT command failed after retry: ${command}`);
+  return null;
+}
+
 export async function initAdapter(protocolCode = '0', onProgress) {
   // Clear diagnostic log for this session
   diagLog.length = 0;
@@ -222,24 +250,28 @@ export async function initAdapter(protocolCode = '0', onProgress) {
   onProgress?.('Resetting adapter...');
   await sendLenientCommand('ATD', 3000);
   await sendLenientCommand('ATWS', 3000);
-  await new Promise(r => setTimeout(r, 500));
 
-  // Configure — use lenient commands (any response = adapter alive, no error gate)
+  // Wait for warm start to complete — strict adapters (Carista, OBDLink) need
+  // up to 2s to reboot the interpreter and become ready for commands.
+  // Cheap clones typically restart instantly but tolerate the longer delay.
+  await new Promise(r => setTimeout(r, 2000));
+
+  // Configure — verify each command was accepted.
+  // Strict adapters will reject commands sent while still initialising.
   onProgress?.('Configuring adapter...');
-  await sendLenientCommand('ATE0', 3000);
-  await sendLenientCommand('ATL0', 3000);
-  await sendLenientCommand('ATS0', 3000);
-  await sendLenientCommand('ATH0', 3000);
+  await sendVerifiedAT('ATE0', 3000);  // Echo OFF
+  await sendVerifiedAT('ATL0', 3000);  // Linefeeds OFF
+  await sendVerifiedAT('ATS1', 3000);  // Spaces ON
+  await sendVerifiedAT('ATH0', 3000);  // Headers OFF
 
   // Identify — lenient, don't reject valid version strings
-  let version = await sendLenientCommand('ATI', 5000) || 'Unknown';
+  let version = await sendVerifiedAT('ATI', 5000) || 'Unknown';
 
-  // Set protocol + adaptive timing — lenient
-  await sendLenientCommand(`ATSP${protocolCode}`, 3000);
-  await sendLenientCommand('ATS1', 3000);
-  await sendLenientCommand('ATAT2', 3000);
+  // Set protocol + adaptive timing
+  await sendVerifiedAT(`ATSP${protocolCode}`, 3000);
+  await sendVerifiedAT('ATAT2', 3000);
 
-  // Probe ECU with selected protocol
+  // Probe ECU with selected protocol — use generous timeout for protocol negotiation
   onProgress?.('Testing ECU connection...');
   let activeCode = protocolCode;
   let ecuReachable = await probeECU();
@@ -249,7 +281,7 @@ export async function initAdapter(protocolCode = '0', onProgress) {
     const fallbacks = [...CAN_PROTOCOLS, ...LEGACY_PROTOCOLS].filter(c => c !== protocolCode);
     for (const code of fallbacks) {
       onProgress?.(`Trying protocol ${code}...`);
-      await sendLenientCommand(`ATSP${code}`, 3000);
+      await sendVerifiedAT(`ATSP${code}`, 3000);
       await new Promise(r => setTimeout(r, 500));
       if (await probeECU()) {
         activeCode = code;
@@ -259,8 +291,8 @@ export async function initAdapter(protocolCode = '0', onProgress) {
     }
   }
 
-  // Describe the active protocol — lenient
-  let protocol = await sendLenientCommand('ATDP', 5000) || 'Unknown';
+  // Describe the active protocol
+  let protocol = await sendVerifiedAT('ATDP', 5000) || 'Unknown';
 
   return {
     elmVersion: version,
@@ -275,14 +307,27 @@ export async function initAdapter(protocolCode = '0', onProgress) {
  * @param {string} pid - PID code (e.g. '0C' for RPM)
  * @returns {Promise<{ value, unit, warn, name, description, min, max } | null>}
  */
+// First few PID queries use a longer timeout to allow for protocol negotiation
+// (strict adapters like Carista may need SEARCHING... time on first contact)
+let pidQueryCount = 0;
+
 export async function queryPID(pid) {
   const command = `01${pid}`;
+  // First 20 queries (roughly 2 poll cycles) get 6s timeout for protocol settling
+  const timeout = pidQueryCount < 20 ? 6000 : 3000;
+  pidQueryCount++;
   try {
-    const response = await sendWithRetry(command, 3000);
+    const response = await sendWithRetry(command, timeout);
+    // Log first few responses for diagnostics
+    if (pidQueryCount <= 10) {
+      console.log(`[PID ${pid}] raw response: "${response}"`);
+    }
     const dataBytes = parseResponseBytes(response);
     return decodePID(pid, dataBytes);
   } catch (err) {
-    console.warn(`PID query failed for ${pid}:`, err.message);
+    if (pidQueryCount <= 10) {
+      console.warn(`[PID ${pid}] failed: ${err.message}`);
+    }
     return null;
   }
 }
@@ -468,41 +513,93 @@ export async function readMonitorStatus() {
  *
  * @returns {Promise<{ dtcs: Array, reachable: boolean, raw: string }>}
  */
+/**
+ * Addressing schemes for reaching the CVM from the OBD port.
+ *
+ * Scheme 1 (BMW standard): The OBD port connects to D-CAN. The JBE gateway
+ * routes requests to K-CAN body modules. Tester address 0x6F1 with the
+ * module's physical address as the target. CVM responds on 0x660.
+ *
+ * Scheme 2 (direct): Send directly to CVM CAN ID 0x660, filter responses
+ * from 0x6E0. Works on some adapters/vehicles where the gateway is transparent.
+ *
+ * Scheme 3 (flow control): Same as scheme 1 but with explicit ISO-TP flow
+ * control setup — required by adapters that follow the ELM327 spec strictly
+ * (e.g. Carista, OBDLink) for multi-frame UDS responses.
+ */
+const CVM_ADDRESSING = [
+  {
+    name: 'BMW gateway (flow control)',
+    setup: async () => {
+      await sendSafeCommand('ATH1', 3000);
+      await sendSafeCommand('ATSH 6F1', 3000);   // Standard BMW diagnostic tester address
+      await sendSafeCommand('ATCRA 660', 3000);   // CVM responds on 0x660
+      await sendSafeCommand('ATCFC1', 3000);       // Enable flow control
+      await sendSafeCommand('ATFCSH 6F1', 3000);   // Flow control header = tester
+      await sendSafeCommand('ATFCSD 30 00 00', 3000); // Continue-to-send, no delay
+      await sendSafeCommand('ATFCSM 1', 3000);     // Flow control mode 1 (user-defined)
+    },
+  },
+  {
+    name: 'BMW gateway (no flow control)',
+    setup: async () => {
+      await sendSafeCommand('ATH1', 3000);
+      await sendSafeCommand('ATSH 6F1', 3000);
+      await sendSafeCommand('ATCRA 660', 3000);
+    },
+  },
+  {
+    name: 'Direct CVM addressing',
+    setup: async () => {
+      await sendSafeCommand('ATH1', 3000);
+      await sendSafeCommand('ATSH 660', 3000);
+      await sendSafeCommand('ATCRA 6E0', 3000);
+    },
+  },
+];
+
 export async function readCVMDTCs(onProgress) {
-  const result = { dtcs: [], reachable: false, raw: '' };
+  const result = { dtcs: [], reachable: false, raw: '', addressingScheme: null };
 
   try {
-    // 1. Enable headers so we can see response addresses
     if (onProgress) onProgress(0); // Setting CVM headers
-    await sendSafeCommand('ATH1', 3000);
 
-    // 2. Set transmit address to CVM module
-    await sendSafeCommand('ATSH 660', 3000);
+    // Try each addressing scheme until one gets a response
+    for (const scheme of CVM_ADDRESSING) {
+      try {
+        // Restore clean state before each attempt
+        try { await sendLenientCommand('ATAR', 3000); } catch {}
+        try { await sendLenientCommand('ATCFC0', 3000); } catch {}
 
-    // 3. Filter responses to CVM only
-    await sendSafeCommand('ATCRA 6E0', 3000);
+        await scheme.setup();
 
-    // 4. Send UDS ReadDTCInformation — status mask 0xFF (all stored DTCs)
-    if (onProgress) onProgress(1); // Scanning roof module
-    let response;
-    try {
-      response = await enqueue('19 02 FF', 8000);
-    } catch (err) {
-      // NO DATA or CAN ERROR means CVM not reachable — not a failure
-      console.warn('CVM scan: module not reachable:', err.message);
-      return result; // reachable stays false
+        if (onProgress) onProgress(1); // Scanning roof module
+
+        const rawResponse = await enqueue('19 02 FF', 8000);
+        const response = cleanResponse(rawResponse, '19 02 FF');
+
+        if (response && !isELMError(response)) {
+          result.reachable = true;
+          result.addressingScheme = scheme.name;
+          const parsed = parseCVMResponse(response);
+          result.dtcs = parsed.dtcs;
+          result.raw = parsed.raw;
+          console.log(`CVM reached via: ${scheme.name}`);
+          break;
+        }
+      } catch (err) {
+        console.warn(`CVM scheme "${scheme.name}" failed:`, err.message);
+        // Try next scheme
+      }
     }
 
-    // If we got here, module responded
-    if (response && !isELMError(response)) {
-      result.reachable = true;
-      const parsed = parseCVMResponse(response);
-      result.dtcs = parsed.dtcs;
-      result.raw = parsed.raw;
+    if (!result.reachable) {
+      console.warn('CVM scan: module not reachable on any addressing scheme');
     }
   } finally {
-    // 5. ALWAYS restore normal OBD-II mode, even if scan failed
+    // ALWAYS restore normal OBD-II mode
     if (onProgress) onProgress(2); // Restoring OBD mode
+    try { await sendSafeCommand('ATCFC0', 3000); } catch {} // Disable flow control
     try { await sendSafeCommand('ATH0', 3000); } catch {}
     try { await sendSafeCommand('ATAR', 3000); } catch {}
     try { await sendSafeCommand('ATD', 3000); } catch {}
@@ -516,14 +613,30 @@ export async function readCVMDTCs(onProgress) {
 // CVM Live Status — UDS ReadDataByIdentifier (0x22)
 // ---------------------------------------------------------------------------
 
+// Track which addressing scheme worked (set by readCVMDTCs, reused by DID reads)
+let activeCVMScheme = null;
+
+/** Set the active CVM addressing scheme (called from App.jsx after scan). */
+export function setCVMAddressingScheme(schemeName) {
+  activeCVMScheme = CVM_ADDRESSING.find(s => s.name === schemeName) || null;
+}
+
 /**
  * Helper: set ELM327 headers to address the CVM module.
- * Reuses the same addressing proven by readCVMDTCs.
+ * Reuses the same addressing scheme that was proven by readCVMDTCs.
+ * Falls back to direct addressing if no scheme has been proven yet.
  */
 async function enterCVMMode() {
-  await sendSafeCommand('ATH1', 3000);
-  await sendSafeCommand('ATSH 660', 3000);
-  await sendSafeCommand('ATCRA 6E0', 3000);
+  if (activeCVMScheme) {
+    try { await sendLenientCommand('ATAR', 3000); } catch {}
+    try { await sendLenientCommand('ATCFC0', 3000); } catch {}
+    await activeCVMScheme.setup();
+  } else {
+    // Default fallback
+    await sendSafeCommand('ATH1', 3000);
+    await sendSafeCommand('ATSH 660', 3000);
+    await sendSafeCommand('ATCRA 6E0', 3000);
+  }
 }
 
 /**
@@ -531,6 +644,7 @@ async function enterCVMMode() {
  * Always called in a finally block — individual failures are swallowed.
  */
 async function exitCVMMode() {
+  try { await sendSafeCommand('ATCFC0', 3000); } catch {}
   try { await sendSafeCommand('ATH0', 3000); } catch {}
   try { await sendSafeCommand('ATAR', 3000); } catch {}
   try { await sendSafeCommand('ATD', 3000); } catch {}
@@ -551,13 +665,15 @@ export async function readCVMDID(did) {
   try {
     await enterCVMMode();
 
-    let response;
+    const cmd = `22 ${didHi} ${didLo}`;
+    let rawResponse;
     try {
-      response = await enqueue(`22 ${didHi} ${didLo}`, 5000);
+      rawResponse = await enqueue(cmd, 5000);
     } catch (err) {
       return { ok: false, error: err.message };
     }
 
+    const response = cleanResponse(rawResponse, cmd);
     if (!response || isELMError(response)) {
       return { ok: false, error: response || 'No response' };
     }
@@ -590,9 +706,11 @@ export async function probeCVMDIDs(candidates, onProgress) {
       const didLo = (did & 0xFF).toString(16).toUpperCase().padStart(2, '0');
 
       let result = { ok: false, error: 'No response' };
+      const cmd = `22 ${didHi} ${didLo}`;
 
       try {
-        const response = await enqueue(`22 ${didHi} ${didLo}`, 5000);
+        const rawResponse = await enqueue(cmd, 5000);
+        const response = cleanResponse(rawResponse, cmd);
         if (response && !isELMError(response)) {
           result = parseReadDIDResponse(response, did);
         }
@@ -635,9 +753,11 @@ export async function readCVMStatusBatch(dids) {
     for (const did of dids) {
       const didHi = ((did >> 8) & 0xFF).toString(16).toUpperCase().padStart(2, '0');
       const didLo = (did & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+      const cmd = `22 ${didHi} ${didLo}`;
 
       try {
-        const response = await enqueue(`22 ${didHi} ${didLo}`, 5000);
+        const rawResponse = await enqueue(cmd, 5000);
+        const response = cleanResponse(rawResponse, cmd);
         if (response && !isELMError(response)) {
           reachable = true;
           results.set(did, parseReadDIDResponse(response, did));
@@ -664,4 +784,5 @@ export function clearQueue() {
   }
   queue = [];
   processing = false;
+  pidQueryCount = 0; // Reset timeout boost for next connection
 }
